@@ -1,0 +1,25 @@
+{
+  "name": "Club de Leones Veracruz",
+  "short_name": "Leones VER",
+  "description": "Directorio digital del Club de Leones de Veracruz A.C.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0D1B2A",
+  "theme_color": "#0D1B2A",
+  "orientation": "portrait",
+  "lang": "es",
+  "icons": [
+    {
+      "src": "https://res.cloudinary.com/dgfkkwypy/image/upload/c_fit,w_192,h_192/v1773701524/LCI_emblem_2color_web_leemft.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "https://res.cloudinary.com/dgfkkwypy/image/upload/c_fit,w_512,h_512/v1773701524/LCI_emblem_2color_web_leemft.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
