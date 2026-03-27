@@ -3,218 +3,89 @@ service cloud.firestore {
   match /databases/{database}/documents {
 
     // ── HELPERS ──────────────────────────────────────
-    function isAuth() { return request.auth != null; }
 
-    function isOwner(uid) {
-      return isAuth() && request.auth.uid == uid;
+    function signedIn() {
+      return request.auth != null;
     }
 
-    function myRole() {
-      return get(/databases/$(database)/documents/usuarios/$(request.auth.uid)).data.rol;
+    function myRoleDoc() {
+      return get(/databases/$(database)/documents/roles/$(request.auth.uid));
+    }
+
+    function isActive() {
+      return signedIn() &&
+        exists(/databases/$(database)/documents/roles/$(request.auth.uid)) &&
+        myRoleDoc().data.activo == true;
     }
 
     function isAdmin() {
-      return isAuth() && (myRole() == 'admin' || myRole() == 'subadmin');
+      return isActive() &&
+        myRoleDoc().data.rol == "admin";
     }
 
-    function isMember() {
-      return isAuth() && (
-        myRole() == 'miembro' ||
-        myRole() == 'admin' ||
-        myRole() == 'subadmin' ||
-        myRole() == 'tesorero' ||
-        myRole() == 'cantinero' ||
-        myRole() == 'mutualista'
-      );
+    function isOwner(uid) {
+      return signedIn() && request.auth.uid == uid;
     }
 
-    function canPublish() {
-      return isAuth() && (
-        myRole() == 'admin' ||
-        myRole() == 'subadmin' ||
-        get(/databases/$(database)/documents/usuarios/$(request.auth.uid))
-          .data.cargos.hasAny(['Presidente', 'Secretario'])
-      );
-    }
-
-    // ── VALIDACIONES ─────────────────────────────────
-
-    function validUserCreate() {
-      return request.resource.data.keys().hasOnly([
-        'nombre', 'apellido', 'fechaNacimiento', 'whatsapp', 'correo',
-        'tipo', 'rol', 'cargos', 'creado', 'fechaIngreso', 'conyuge',
-        'photoURL', 'padrinoUID', 'padrinoNombre', 'fcmToken'
-      ])
-      && request.resource.data.rol == 'pendiente'
-      && request.resource.data.cargos is list
-      && request.resource.data.cargos.size() == 0
-      && request.resource.data.tipo in ['socio', 'dama', 'empleado', 'viuda', 'cooperadora']
-      && request.resource.data.correo == request.auth.token.email
-      && !('numeroSocio' in request.resource.data);
-    }
-
-    function validSolicitudCreate() {
-      return request.resource.data.keys().hasOnly([
-        'uid', 'nombre', 'cargo', 'estado', 'fecha'
-      ])
-      && request.resource.data.uid == request.auth.uid
-      && request.resource.data.nombre is string && request.resource.data.nombre.size() > 0
-      && request.resource.data.cargo is string && request.resource.data.cargo.size() > 0
-      && request.resource.data.estado == 'pendiente'
-      && request.resource.data.fecha is string;
-    }
-
-    function validComunicadoCreate() {
-      return request.resource.data.keys().hasOnly([
-        'titulo', 'texto', 'tipo', 'destinatarios', 'imageURL',
-        'autorUID', 'autorNombre', 'fecha', 'activo',
-        'destinatarioUID', 'destinatarioNombre'
-      ])
-      && request.resource.data.titulo is string && request.resource.data.titulo.size() > 0
-      && request.resource.data.texto is string && request.resource.data.texto.size() > 0
-      && request.resource.data.tipo in ['aviso', 'oficial', 'evento', 'urgente', 'adeudo']
-      && request.resource.data.destinatarios in ['todos', 'socio', 'dama', 'empleado', 'directo']
-      && request.resource.data.autorUID == request.auth.uid
-      && request.resource.data.fecha is string
-      && request.resource.data.activo == true;
-    }
-
-    function validComunicadoUpdate() {
-      return request.resource.data.keys().hasOnly([
-        'titulo', 'texto', 'tipo', 'destinatarios', 'imageURL',
-        'autorUID', 'autorNombre', 'fecha', 'activo', 'ultimaEdicion',
-        'destinatarioUID', 'destinatarioNombre'
-      ])
-      && request.resource.data.autorUID == resource.data.autorUID
-      && request.resource.data.titulo is string
-      && request.resource.data.texto is string
-      && request.resource.data.tipo in ['aviso', 'oficial', 'evento', 'urgente', 'adeudo']
-      && request.resource.data.destinatarios in ['todos', 'socio', 'dama', 'empleado', 'directo']
-      && request.resource.data.fecha is string
-      && request.resource.data.activo is bool;
-    }
-
-    function validReciboWrite() {
-      return request.resource.data.keys().hasOnly([
-        'socioUID', 'nombreSocio', 'numeroSocio', 'mes', 'anio',
-        'c1', 'c2', 'c3', 'c4', 'c5', 'c6', 'c6label',
-        'c7', 'c7label', 'notas', 'total', 'estado',
-        'plantilla', 'autorUID', 'autorNombre', 'creado', 'modificado'
-      ])
-      && request.resource.data.socioUID is string
-      && request.resource.data.mes is string
-      && request.resource.data.anio is int
-      && request.resource.data.total is number
-      && request.resource.data.estado in ['pendiente', 'pagado']
-      && request.resource.data.autorUID == request.auth.uid;
-    }
-
-    function validReciboUpdate() {
-      return request.resource.data.keys().hasOnly([
-        'socioUID', 'nombreSocio', 'numeroSocio', 'mes', 'anio',
-        'c1', 'c2', 'c3', 'c4', 'c5', 'c6', 'c6label',
-        'c7', 'c7label', 'notas', 'total', 'estado',
-        'plantilla', 'autorUID', 'autorNombre', 'creado', 'modificado'
-      ])
-      && request.resource.data.total is number
-      && request.resource.data.estado in ['pendiente', 'pagado']
-      && request.resource.data.modificado is string;
-    }
-
-    function validTarifaWrite() {
-      return request.resource.data.keys().hasOnly([
-        'anio', 'c1', 'c2', 'c3', 'c4', 'c5',
-        'c6', 'c6label', 'c7', 'c7label',
-        'actualizadoPor', 'actualizado'
-      ])
-      && request.resource.data.anio is int
-      && request.resource.data.c1 is number
-      && request.resource.data.c2 is number
-      && request.resource.data.c3 is number
-      && request.resource.data.c4 is number
-      && request.resource.data.c5 is number
-      && request.resource.data.c6 is number
-      && request.resource.data.c7 is number
-      && request.resource.data.c6label is string
-      && request.resource.data.c7label is string;
-    }
-
-    // ── COLECCIONES ──────────────────────────────────
+    // ── USUARIOS (PERFIL) ────────────────────────────
 
     match /usuarios/{uid} {
-      allow read: if isAuth() && (isOwner(uid) || isMember());
 
-      allow create: if isAuth() && isOwner(uid) && validUserCreate();
+      allow read: if isOwner(uid) || isAdmin();
 
-      // Usuario puede editar solo datos no críticos + fcmToken
-      allow update: if isAuth() && isOwner(uid)
-        && !request.resource.data.diff(resource.data).affectedKeys()
-          .hasAny(['rol', 'numeroSocio', 'cargos', 'correo']);
+      allow create: if isOwner(uid);
 
-      // Admin puede todo
-      allow update, delete: if isAdmin();
+      allow update: if isOwner(uid) &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          "nombre",
+          "telefono",
+          "fotoURL",
+          "updatedAt"
+        ]);
+
+      allow delete: if false;
     }
 
-    match /solicitudes/{id} {
-      allow read: if isAuth() && (isAdmin() || resource.data.uid == request.auth.uid);
-      allow create: if isAuth() && isMember() && validSolicitudCreate();
-      allow update, delete: if isAdmin();
+    // ── ROLES (PRIVADO TOTAL) ───────────────────────
+
+    match /roles/{uid} {
+      allow read, write: if false;
     }
 
-    match /comunicados/{id} {
-      allow read: if isAuth() && isMember();
-      allow create: if isAuth() && canPublish() && validComunicadoCreate();
-      allow update: if isAuth() && canPublish() && validComunicadoUpdate();
-      allow delete: if isAuth() && canPublish();
-    }
+    // ── SOCIOS (DIRECTORIO) ─────────────────────────
 
-    match /adeudos/{uid} {
-      allow read: if isAuth() && (isOwner(uid) || isAdmin());
-      allow write: if isAdmin();
-    }
+    match /socios/{id} {
 
-    match /pagos/{id} {
-      allow read: if isAuth() && (resource.data.uid == request.auth.uid || isAdmin());
-      allow write: if isAdmin();
-    }
+      // Solo usuarios activos pueden ver directorio
+      allow read: if isActive();
 
-    match /recibos/{id} {
-      allow read: if isAuth() && (
-        resource.data.socioUID == request.auth.uid ||
-        isAdmin() ||
-        myRole() == 'tesorero' ||
-        myRole() == 'mutualista'
-      );
-      allow create: if isAuth() && (isAdmin() || myRole() == 'tesorero') && validReciboWrite();
-      allow update: if isAuth() && (isAdmin() || myRole() == 'tesorero') && validReciboUpdate();
-      allow delete: if isAdmin();
-    }
-
-    match /tarifas/{anio} {
-      allow read: if isAuth() && (isAdmin() || myRole() == 'tesorero' || myRole() == 'mutualista');
-      allow write: if isAdmin() && validTarifaWrite();
-    }
-
-    match /mutualista_pagos/{id} {
-      allow read: if isAuth() && (isAdmin() || myRole() == 'mutualista');
+      // Solo admin modifica
       allow create, update, delete: if isAdmin();
     }
 
-    match /auditoria/{id} {
-      allow read: if isAuth() && myRole() == 'admin';
-      allow create: if isAuth() && (
-        isAdmin() ||
-        myRole() == 'tesorero' ||
-        myRole() == 'cantinero' ||
-        get(/databases/$(database)/documents/usuarios/$(request.auth.uid))
-          .data.cargos.hasAny(['Presidente', 'Secretario'])
-      );
-      allow update, delete: if false;
+    // ── COMUNICADOS ─────────────────────────────────
+
+    match /comunicados/{id} {
+
+      // Solo miembros activos ven avisos
+      allow read: if isActive();
+
+      // Solo admin publica
+      allow create, update, delete: if isAdmin();
     }
 
-    // BLOQUE TOTAL POR DEFECTO
+    // ── SOLICITUDES (ADMIN) ─────────────────────────
+
+    match /solicitudes/{id} {
+
+      allow read, write: if isAdmin();
+    }
+
+    // ── FALLBACK (CERO ACCESO) ──────────────────────
+
     match /{document=**} {
       allow read, write: if false;
     }
+
   }
 }
