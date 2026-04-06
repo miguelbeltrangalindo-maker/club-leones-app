@@ -67,3 +67,7 @@ node_modules/
 
 # dataconnect generated files
 .dataconnect
+.DS_Store
+
+# Firebase service account — NUNCA subir al repo
+serviceAccountKey.json
