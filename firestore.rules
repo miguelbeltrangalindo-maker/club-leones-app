@@ -2,90 +2,283 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // ── HELPERS ──────────────────────────────────────
+    // ── Helpers de autenticación ──────────────────────────────────────────────
 
-    function signedIn() {
+    function isAuthenticated() {
       return request.auth != null;
     }
 
-    function myRoleDoc() {
-      return get(/databases/$(database)/documents/roles/$(request.auth.uid));
+    function isSelf(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
     }
 
-    function isActive() {
-      return signedIn() &&
-        exists(/databases/$(database)/documents/roles/$(request.auth.uid)) &&
-        myRoleDoc().data.activo == true;
+    function roleDocExists() {
+      return isAuthenticated() && exists(/databases/$(database)/documents/roles/$(request.auth.uid));
+    }
+
+    function currentUserDoc() {
+      return get(/databases/$(database)/documents/usuarios/$(request.auth.uid)).data;
+    }
+
+    function currentRoleDoc() {
+      return get(/databases/$(database)/documents/roles/$(request.auth.uid)).data;
+    }
+
+    // ── Helpers de rol ────────────────────────────────────────────────────────
+    // Nota: 'usuario' se trata igual que 'miembro' para compatibilidad con
+    // documentos legacy mientras se ejecuta la migración migrate-roles.js
+
+    function getEffectiveRol() {
+      return roleDocExists() ? currentRoleDoc().rol : currentUserDoc().rol;
     }
 
     function isAdmin() {
-      return isActive() &&
-        myRoleDoc().data.rol == "admin";
+      return isAuthenticated() && getEffectiveRol() == 'admin';
     }
 
-    function isOwner(uid) {
-      return signedIn() && request.auth.uid == uid;
+    function isSubadmin() {
+      return isAuthenticated() && getEffectiveRol() == 'subadmin';
     }
 
-    // ── USUARIOS (PERFIL) ────────────────────────────
-
-    match /usuarios/{uid} {
-
-      allow read: if isOwner(uid) || isAdmin();
-
-      allow create: if isOwner(uid);
-
-      allow update: if isOwner(uid) &&
-        request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-          "nombre",
-          "telefono",
-          "fotoURL",
-          "updatedAt"
-        ]);
-
-      allow delete: if false;
+    function isAdminOrSub() {
+      return isAdmin() || isSubadmin();
     }
 
-    // ── ROLES (PRIVADO TOTAL) ───────────────────────
-
-    match /roles/{uid} {
-      allow read, write: if false;
+    function isTesorero() {
+      return isAuthenticated() && (
+        getEffectiveRol() == 'tesorero' ||
+        (roleDocExists()
+          ? false
+          : (currentUserDoc().cargos != null && currentUserDoc().cargos.hasAny(['Tesorero'])))
+      );
     }
 
-    // ── SOCIOS (DIRECTORIO) ─────────────────────────
-
-    match /socios/{id} {
-
-      // Solo usuarios activos pueden ver directorio
-      allow read: if isActive();
-
-      // Solo admin modifica
-      allow create, update, delete: if isAdmin();
+    function isMutualista() {
+      return isAuthenticated() && getEffectiveRol() == 'mutualista';
     }
 
-    // ── COMUNICADOS ─────────────────────────────────
-
-    match /comunicados/{id} {
-
-      // Solo miembros activos ven avisos
-      allow read: if isActive();
-
-      // Solo admin publica
-      allow create, update, delete: if isAdmin();
+    function isCantinero() {
+      return isAuthenticated() && getEffectiveRol() == 'cantinero';
     }
 
-    // ── SOLICITUDES (ADMIN) ─────────────────────────
-
-    match /solicitudes/{id} {
-
-      allow read, write: if isAdmin();
+    function isSocio() {
+      return isAuthenticated() && currentUserDoc().tipo == 'socio';
     }
 
-    // ── FALLBACK (CERO ACCESO) ──────────────────────
+    function isDamaAdmin() {
+      return isAuthenticated() && getEffectiveRol() == 'dama_admin';
+    }
 
+    function isDamaPalomaAdmin() {
+      return isAuthenticated() && getEffectiveRol() == 'dama_admin_paloma';
+    }
+
+    function isDamaTipo() {
+      return isAuthenticated() && (
+        currentUserDoc().tipo == 'dama' ||
+        currentUserDoc().tipo == 'viuda' ||
+        currentUserDoc().tipo == 'cooperadora'
+      );
+    }
+
+    function isPaloma() {
+      return isAuthenticated() && currentUserDoc().tipo == 'paloma';
+    }
+
+    function hasDamaAccess() {
+      return isDamaTipo() || isPaloma();
+    }
+
+    // Cualquier usuario activo (incluyendo 'usuario' legacy y 'miembro')
+    function isMember() {
+      return isAuthenticated() && (
+        (roleDocExists() && currentRoleDoc().activo != false) ||
+        (!roleDocExists() && currentUserDoc().activo != false)
+      );
+    }
+
+    // Socio activo y aprobado (no pendiente)
+    function isApprovedMember() {
+      return isMember() && getEffectiveRol() != 'pendiente';
+    }
+
+    // ── Validación de campos editables por el propio usuario ──────────────────
+
+    function selfEditableUserFieldsOnly() {
+      let changed = request.resource.data.diff(resource.data).changedKeys();
+      let d = request.resource.data;
+      return changed.hasOnly(['nombre','apellido','correo','whatsapp','photoURL','conyuge','fcmToken'])
+        && (!changed.hasAny(['nombre'])    || (d.nombre    is string && d.nombre.size()    <= 80))
+        && (!changed.hasAny(['apellido'])  || (d.apellido  is string && d.apellido.size()  <= 80))
+        && (!changed.hasAny(['correo'])    || (d.correo    is string && d.correo.size()    <= 100))
+        && (!changed.hasAny(['whatsapp'])  || (d.whatsapp  is string && d.whatsapp.size()  <= 20))
+        && (!changed.hasAny(['conyuge'])   || (d.conyuge   is string && d.conyuge.size()   <= 120))
+        && (!changed.hasAny(['photoURL'])  || (d.photoURL  is string && d.photoURL.size()  <= 500))
+        && (!changed.hasAny(['fcmToken'])  || (d.fcmToken  is string && d.fcmToken.size()  <= 300));
+    }
+
+    // ── Validación de campos de comunicados ───────────────────────────────────
+
+    function validComunicado() {
+      let d = request.resource.data;
+      return d.titulo is string && d.titulo.size() >= 1 && d.titulo.size() <= 200
+          && d.texto  is string && d.texto.size()  <= 3000;
+    }
+
+    // ════════════════════════════════════════════════════════════
+    //  COLECCIONES
+    // ════════════════════════════════════════════════════════════
+
+    match /usuarios/{userId} {
+      // Lectura individual: solo miembros aprobados.
+      // Lista/query: miembros aprobados O documentos offline no migrados
+      // (para búsqueda en formulario de registro antes de autenticarse).
+      allow get:  if isApprovedMember();
+      // list sin auth: permite docs offline (filtro de migrado se hace en el cliente)
+      allow list: if isApprovedMember()
+                    || resource.data.offline == true;
+      allow create: if isSelf(userId) || isAdminOrSub();
+      allow update: if isAdminOrSub() || (isSelf(userId) && selfEditableUserFieldsOnly());
+      allow delete: if isAdmin();
+    }
+
+    match /roles/{userId} {
+      allow read: if isApprovedMember();
+      allow create: if isSelf(userId) || isAdminOrSub();
+      allow update: if isAdminOrSub();
+      allow delete: if isAdmin();
+    }
+
+    match /comunicados/{docId} {
+      allow read: if isApprovedMember();
+      allow create, update: if isAdminOrSub() && validComunicado();
+      allow delete: if isAdminOrSub();
+    }
+
+    match /comunicado_lecturas/{docId} {
+      allow read: if isAdminOrSub() ||
+        (isAuthenticated() && resource.data.uid == request.auth.uid);
+      allow create, update: if isAuthenticated() &&
+        request.resource.data.uid == request.auth.uid;
+      allow delete: if isAdmin();
+    }
+
+    match /solicitudes/{docId} {
+      allow read: if isAdminOrSub();
+      allow create: if isAuthenticated();
+      allow update, delete: if isAdminOrSub();
+    }
+
+    match /pagos/{docId} {
+      allow read: if isAdminOrSub() || isTesorero() ||
+        (isAuthenticated() && resource.data.uid == request.auth.uid);
+      allow create, update, delete: if isAdminOrSub() || isTesorero();
+    }
+
+    match /adeudos/{userId} {
+      allow read: if isAdminOrSub() || isTesorero() || isSelf(userId);
+      allow create, update, delete: if isAdminOrSub() || isTesorero();
+    }
+
+    match /recibos/{docId} {
+      // Admin, tesorero y mutualista pueden leer todos los recibos.
+      // Socios solo pueden leer sus propios recibos (campo socioUID).
+      // El filtro de Firestore WHERE socioUID==uid cumple la regla automáticamente.
+      allow read: if isAdminOrSub() || isTesorero() || isMutualista() ||
+        (isAuthenticated() && resource.data.socioUID == request.auth.uid);
+      allow create, update, delete: if isAdminOrSub() || isTesorero();
+    }
+
+    match /mutualista_pagos/{docId} {
+      allow read: if isAdminOrSub() || isTesorero() || isMutualista();
+      allow create, update, delete: if isAdminOrSub() || isTesorero();
+    }
+
+    match /tarifas/{docId} {
+      allow read: if isApprovedMember();
+      allow create, update, delete: if isAdminOrSub() || isTesorero();
+    }
+
+    match /auditoria/{docId} {
+      allow create: if isApprovedMember();
+      allow read: if isAdmin();
+      allow update, delete: if false;
+    }
+
+    match /fondo_reserva/{docId} {
+      allow read: if isAdminOrSub();
+      allow create, update: if isAdminOrSub();
+      allow delete: if isAdmin();
+    }
+
+    // config: documentos de configuración del sistema (saldo inicial bancos, etc.)
+    match /config/{docId} {
+      allow read: if isAdminOrSub();
+      allow write: if isAdmin();
+    }
+
+    // rubros_financieros: catálogo de categorías de ingresos y gastos
+    match /rubros_financieros/{docId} {
+      allow read: if isAdminOrSub();
+      allow create, update: if isAdminOrSub();
+      allow delete: if isAdmin();
+    }
+
+    // movimientos_financieros: registro de ingresos y gastos del club
+    match /movimientos_financieros/{docId} {
+      allow read: if isAdminOrSub();
+      allow create: if isAdminOrSub();
+      allow update: if isAdminOrSub();
+      allow delete: if isAdmin();
+    }
+
+    // notificaciones_push: solo admin/tesorero pueden crear documentos que
+    // disparan el Cloud Function notificarAdeudoManual.
+    // El Cloud Function usa Admin SDK y no está sujeto a estas reglas.
+    match /notificaciones_push/{docId} {
+      allow create: if isAdminOrSub() || isTesorero();
+      allow read, update, delete: if false;
+    }
+
+    // palomas: módulo La Paloma (reuniones de damas)
+    // - Lectura y RSVP (update): damas, viudas, cooperadoras
+    // - Crear / eliminar paloma: dama_admin_paloma + admin/subadmin
+    match /palomas/{docId} {
+      allow read:   if isAdminOrSub() || hasDamaAccess() || isDamaPalomaAdmin();
+      allow create: if isAdminOrSub() || isDamaPalomaAdmin();
+      allow update: if isAdminOrSub() || isDamaPalomaAdmin() || hasDamaAccess();
+      allow delete: if isAdminOrSub() || isDamaPalomaAdmin();
+    }
+
+    // damas_eventos / damas_causas / damas_listas: módulo Organización de Damas
+    // - Lectura: damas, viudas, cooperadoras + admin/subadmin
+    // - Escritura: dama_admin + admin/subadmin
+    match /damas_eventos/{docId} {
+      allow read: if isAdminOrSub() || isDamaAdmin() || hasDamaAccess();
+      allow create, update, delete: if isAdminOrSub() || isDamaAdmin();
+    }
+    match /damas_causas/{docId} {
+      allow read: if isAdminOrSub() || isDamaAdmin() || hasDamaAccess();
+      allow create, update, delete: if isAdminOrSub() || isDamaAdmin();
+    }
+    match /damas_listas/{docId} {
+      // Toggle de ítems: cualquier dama puede actualizar (completado:bool por ítem)
+      allow read: if isAdminOrSub() || isDamaAdmin() || hasDamaAccess();
+      allow create, delete: if isAdminOrSub() || isDamaAdmin();
+      allow update: if isAdminOrSub() || isDamaAdmin() || hasDamaAccess();
+    }
+
+    // botanas: rol de botana del viernes
+    // - Lectura: socios activos (tipo='socio') + admin/subadmin
+    // - Escritura: cantinero + admin/subadmin
+    match /botanas/{docId} {
+      allow read: if isAdminOrSub() || isSocio();
+      allow create, update, delete: if isAdminOrSub() || isCantinero();
+    }
+
+    // Catch-all: bloquea cualquier colección no declarada explícitamente
     match /{document=**} {
       allow read, write: if false;
     }
-
   }
 }
