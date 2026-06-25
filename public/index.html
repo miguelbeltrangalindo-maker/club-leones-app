@@ -5323,6 +5323,9 @@ window.dashboardLoad = async function(force = false) {
 
   // Widget de próximas reservas (admin/subadmin)
   if (esAdminSub) dashRsvWidgetLoad(force).catch(e => console.error('dashRsvWidgetLoad ERROR:', e));
+
+  // Badge de la Bandeja de Alertas (admin/subadmin que ven finanzas)
+  if (esAdminSub && verFinanzas) alertasBandejaRefreshBadge();
 };
 
 async function dashRsvWidgetLoad(force = false) {
@@ -5559,10 +5562,11 @@ async function dpShow(sec) {
   secEl.style.display='block';
   document.querySelector(`[data-sec="${sec}"]`)?.classList.add('active-nav');
 
-  const titles={dashboard:'Dashboard',miembros:'Usuarios y Directorio',solicitudes:'Pendientes y Solicitudes',comunicados:'Comunicados PRO',pagos:'Pagos y Adeudos',aging:'Antigüedad de Adeudos',recibos:'Recibos de Cuotas',cuotas:'Tarifas Base',estadisticas:'Informe del Tesorero',auditoria:'Actividad del Sistema',mutualista:'Fondo Mutualista','saldo-bancos':'Saldo en Bancos y Caja','movimientos-fin':'Movimientos de Ingresos y Gastos','reportes-fin':'Reportes Financieros','rubros-fin':'Gestión de Rubros','cargos-hist':'Historial de Cargos',acreedores:'Acreedores — Control de Deuda',reservaciones:'Reservaciones de Salones','sec-informe':'Informe del Secretario',integridad:'🛡️ Control de Integridad','eventos-sensibles':'⚠️ Eventos Sensibles','seguridad-aud':'🔒 Seguridad','alertas-aud':'🚨 Alertas de Integridad'};
+  const titles={dashboard:'Dashboard','alertas-bandeja':'🔔 Bandeja de Alertas',miembros:'Usuarios y Directorio',solicitudes:'Pendientes y Solicitudes',comunicados:'Comunicados PRO',pagos:'Pagos y Adeudos',aging:'Antigüedad de Adeudos',recibos:'Recibos de Cuotas',cuotas:'Tarifas Base',estadisticas:'Informe del Tesorero',auditoria:'Actividad del Sistema',mutualista:'Fondo Mutualista','saldo-bancos':'Saldo en Bancos y Caja','movimientos-fin':'Movimientos de Ingresos y Gastos','reportes-fin':'Reportes Financieros','rubros-fin':'Gestión de Rubros','cargos-hist':'Historial de Cargos',acreedores:'Acreedores — Control de Deuda',reservaciones:'Reservaciones de Salones','sec-informe':'Informe del Secretario',integridad:'🛡️ Control de Integridad','eventos-sensibles':'⚠️ Eventos Sensibles','seguridad-aud':'🔒 Seguridad','alertas-aud':'🚨 Alertas de Integridad'};
   document.getElementById('dp-topbar-title').textContent=titles[sec]||'Panel Admin';
 
   if(sec==='dashboard') dashboardLoad();
+  if(sec==='alertas-bandeja') await alertasBandejaLoad();
   if(sec==='miembros') dpRenderTable((window.allMembers||[]).filter(x => document.getElementById('dp-show-bajas')?.checked || x.estado !== 'baja'));
   if(sec==='solicitudes') await dpRenderRequests();
   if(sec==='comunicados') await dpComLoad();
@@ -6652,6 +6656,174 @@ function estadoCuentaAbrirVentana(htmlContent, u) {
   win.document.write(`<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><title>Estado de cuenta — ${esc(fullName)}</title><link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;700;900&family=DM+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet"><style>${css}</style></head><body>${acciones}${htmlContent}</body></html>`);
   win.document.close();
 }
+
+// ══════════════════════════════════════════════════════════════
+//  BANDEJA CENTRAL DE ALERTAS — avisos operativos para el admin.
+//  Evalúa condiciones del club (mora 90+, caja baja, movimientos
+//  sin clasificar, acreedores vencidos/por vencer) y las prioriza.
+//  Distinta de "Alertas de Integridad" (dp-sec-alertas-aud), que es
+//  seguridad/auditoría. Todo se calcula en cliente desde colecciones
+//  ya cacheadas (getCollectionCached) — no requiere Cloud Function.
+// ══════════════════════════════════════════════════════════════
+const ALERTAS_UMBRAL_CAJA = 5000;   // saldo de caja por debajo del cual avisar
+const ALERTAS_DIAS_MORA   = 90;     // antigüedad de adeudo considerada crítica
+const ALERTAS_DIAS_VENC   = 7;      // anticipación (días) para vencimientos de acreedores
+
+async function alertasBandejaCompute(force = false) {
+  const [recibos, usuarios, movs, acreedores, movAcre, cfgC] = await Promise.all([
+    getCollectionCached('recibos', 30000, force).catch(() => []),
+    getCollectionCached('usuarios', 30000, force).catch(() => (window.allMembers || [])),
+    getCollectionCached('movimientos_financieros', 30000, force).catch(() => []),
+    getCollectionCached('acreedores', 30000, force).catch(() => []),
+    getCollectionCached('movimientos_acreedores', 30000, force).catch(() => []),
+    getDoc(doc(db,'config','saldo_caja_inicial')).catch(() => ({ exists: () => false })),
+  ]);
+
+  const alertas = [];
+  const hoy = new Date(); hoy.setHours(0,0,0,0);
+  const meses = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+
+  // ── 1. Mora crítica: socios activos con adeudo de 90+ días ──
+  const sociosActivos = new Set();
+  (usuarios || []).forEach(u => { if (u.estado !== 'baja') sociosActivos.add(u.uid || u.id); });
+  const morososCrit = {};
+  (recibos || []).forEach(r => {
+    if ((r.estado || '').toLowerCase() === 'pagado') return;
+    const saldo = Math.max(0, Number(r.total || 0) - Number(r.montoPagado || 0));
+    if (saldo <= 0) return;
+    if (!sociosActivos.has(r.socioUID)) return;
+    const mIdx = meses.indexOf(r.mes || 'Enero');
+    const fechaRecibo = new Date(Number(r.anio || 2026), mIdx < 0 ? 0 : mIdx, 28);
+    const dias = Math.floor((hoy - fechaRecibo) / 86400000);
+    if (dias < ALERTAS_DIAS_MORA) return;
+    const uid = r.socioUID || 'sin_uid';
+    if (!morososCrit[uid]) morososCrit[uid] = { monto: 0 };
+    morososCrit[uid].monto += saldo;
+  });
+  const nMorososCrit = Object.keys(morososCrit).length;
+  if (nMorososCrit > 0) {
+    const montoCrit = Object.values(morososCrit).reduce((s,m) => s + m.monto, 0);
+    alertas.push({
+      nivel:'critico', icono:'🔴',
+      titulo:`${nMorososCrit} socio${nMorososCrit>1?'s':''} con mora de 90+ días`,
+      detalle:`Cartera vencida crítica por ${fmtMXN(montoCrit)}. Revisa la antigüedad de adeudos y gestiona el cobro.`,
+      sec:'aging', accion:'Ver antigüedad'
+    });
+  }
+
+  // ── 2. Saldo de caja bajo ──
+  const sumCaja = (tipo) => (movs || []).filter(m => m.tipo === tipo && m.destino === 'caja').reduce((s,m) => s + Number(m.monto || 0), 0);
+  const saldoCaja = (cfgC.exists() ? Number(cfgC.data().monto || 0) : 0) + sumCaja('ingreso') - sumCaja('egreso');
+  if (saldoCaja < ALERTAS_UMBRAL_CAJA) {
+    alertas.push({
+      nivel: saldoCaja < 0 ? 'critico' : 'importante',
+      icono: saldoCaja < 0 ? '🔴' : '🟠',
+      titulo:`Saldo de caja bajo: ${fmtMXN(saldoCaja)}`,
+      detalle:`El efectivo en caja está por debajo de ${fmtMXN(ALERTAS_UMBRAL_CAJA)}. Considera trasladar fondos o registrar ingresos pendientes.`,
+      sec:'saldo-bancos', accion:'Ver saldos'
+    });
+  }
+
+  // ── 3. Movimientos financieros sin clasificar (sin rubro) ──
+  const sinClasif = (movs || []).filter(m => !m.rubroId && m.tipoEspecial !== 'transferencia_interna');
+  if (sinClasif.length > 0) {
+    const montoSC = sinClasif.reduce((s,m) => s + Number(m.monto || 0), 0);
+    alertas.push({
+      nivel:'info', icono:'🔵',
+      titulo:`${sinClasif.length} movimiento${sinClasif.length>1?'s':''} sin clasificar`,
+      detalle:`Hay ${fmtMXN(montoSC)} en ingresos/egresos sin rubro asignado. Clasifícalos para que los reportes sean exactos.`,
+      sec:'movimientos-fin', accion:'Ver movimientos'
+    });
+  }
+
+  // ── 4. Acreedores con saldo y vencimiento vencido / próximo ──
+  const limiteVenc = new Date(hoy.getTime() + ALERTAS_DIAS_VENC * 86400000);
+  let vencidos = 0, porVencer = 0;
+  (acreedores || []).filter(a => a.activo !== false).forEach(a => {
+    const movsA = (movAcre || []).filter(m => m.acreedorId === a.id);
+    const deuda  = movsA.filter(m => m.tipo === 'deuda').reduce((s,m) => s + Number(m.monto || 0), 0);
+    const pagado = movsA.filter(m => m.tipo === 'pago').reduce((s,m) => s + Number(m.monto || 0), 0);
+    if (deuda - pagado <= 0) return;  // sin saldo pendiente, sin alerta
+    movsA.filter(m => m.tipo === 'deuda' && m.fechaVencimiento).forEach(m => {
+      const due = parseDateLocal(m.fechaVencimiento);
+      if (!due || isNaN(due.getTime())) return;
+      if (due < hoy) vencidos++;
+      else if (due <= limiteVenc) porVencer++;
+    });
+  });
+  if (vencidos > 0) {
+    alertas.push({
+      nivel:'importante', icono:'🟠',
+      titulo:`${vencidos} deuda${vencidos>1?'s':''} con acreedores vencida${vencidos>1?'s':''}`,
+      detalle:`Hay deudas con acreedores cuya fecha de vencimiento ya pasó. Revísalas y prográmalas.`,
+      sec:'acreedores', accion:'Ver acreedores'
+    });
+  }
+  if (porVencer > 0) {
+    alertas.push({
+      nivel:'info', icono:'🔵',
+      titulo:`${porVencer} deuda${porVencer>1?'s':''} con acreedores por vencer`,
+      detalle:`Vence${porVencer>1?'n':''} en los próximos ${ALERTAS_DIAS_VENC} días. Anticipa el pago para evitar atrasos.`,
+      sec:'acreedores', accion:'Ver acreedores'
+    });
+  }
+
+  const orden = { critico: 0, importante: 1, info: 2 };
+  alertas.sort((a,b) => orden[a.nivel] - orden[b.nivel]);
+  return alertas;
+}
+
+function alertasBandejaSetBadge(n) {
+  const badge = document.getElementById('nav-alertas-bandeja-badge');
+  if (!badge) return;
+  if (n > 0) { badge.textContent = n; badge.style.display = 'flex'; }
+  else { badge.style.display = 'none'; }
+}
+
+window.alertasBandejaRefreshBadge = async function() {
+  try {
+    const alertas = await alertasBandejaCompute(false);
+    alertasBandejaSetBadge(alertas.length);
+  } catch (e) { /* el badge es secundario: fallar en silencio */ }
+};
+
+window.alertasBandejaLoad = async function(force = false) {
+  const cont = document.getElementById('alertas-bandeja-body');
+  if (cont) cont.innerHTML = '<div style="text-align:center;padding:60px;color:#8A9BB0;">Evaluando alertas...</div>';
+  let alertas = [];
+  try {
+    alertas = await alertasBandejaCompute(force);
+  } catch (e) {
+    console.error('alertasBandejaLoad ERROR:', e);
+    if (cont) cont.innerHTML = '<div style="text-align:center;padding:60px;color:#C0392B;">No se pudieron evaluar las alertas.</div>';
+    return;
+  }
+  alertasBandejaSetBadge(alertas.length);
+  if (!cont) return;
+  if (!alertas.length) {
+    cont.innerHTML = '<div style="text-align:center;padding:60px 20px;color:#1A7A4A;font-weight:600;font-size:15px;">✅ Todo en orden.<div style="font-size:12.5px;color:#8A9BB0;font-weight:400;margin-top:6px;">No hay alertas operativas en este momento.</div></div>';
+    return;
+  }
+  const meta = {
+    critico:    { color:'#C0392B', bg:'rgba(192,57,43,0.05)',  lbl:'Crítico'    },
+    importante: { color:'#E67E22', bg:'rgba(230,126,34,0.05)', lbl:'Importante' },
+    info:       { color:'#2980B9', bg:'rgba(41,128,185,0.05)', lbl:'Informativo'},
+  };
+  cont.innerHTML = alertas.map(a => {
+    const m = meta[a.nivel] || meta.info;
+    return `<div style="display:flex;align-items:flex-start;gap:14px;background:${m.bg};border-left:4px solid ${m.color};border-radius:0 10px 10px 0;padding:16px 18px;margin-bottom:12px;">
+      <div style="font-size:22px;line-height:1;flex-shrink:0;">${a.icono}</div>
+      <div style="flex:1;min-width:0;">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:3px;">
+          <span style="font-size:14.5px;font-weight:700;color:#0D1B2A;">${esc(a.titulo)}</span>
+          <span style="font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:${m.color};background:${m.color}1a;padding:2px 7px;border-radius:6px;">${m.lbl}</span>
+        </div>
+        <div style="font-size:12.5px;color:#5A6B7E;line-height:1.5;">${esc(a.detalle)}</div>
+      </div>
+      ${a.sec ? `<button onclick="dpShow('${a.sec}')" style="flex-shrink:0;padding:8px 14px;background:#fff;color:${m.color};border:1.5px solid ${m.color};border-radius:9px;font-family:'DM Sans',sans-serif;font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap;">${esc(a.accion || 'Ver')} →</button>` : ''}
+    </div>`;
+  }).join('');
+};
 
 window.dpAgingLoad = async function(force = false) {
   try {
@@ -15159,7 +15331,7 @@ window.finCategoriaPDF = function() {
 
 // IMPORTANTE: APP_VERSION debe coincidir con "version" en version.json y con
 // VERSION en sw.js. Bumpear las 3 juntas o el banner de update queda pegado.
-const APP_VERSION = '20260515-007';
+const APP_VERSION = '20260625-001';
 
 // Referencia al SW en espera (si existe), compartida entre ambas rutas de actualización
 window._pendingSW = null;
@@ -17019,6 +17191,7 @@ body.damas-theme .filter-tab-active { background:rgba(139,74,107,0.15); color:#5
     </div>
     <div style="padding:20px 20px 8px;font-size:9px;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:rgba(255,255,255,0.25);">Principal</div>
     <div class="dp-nav" data-sec="dashboard" onclick="dpShow('dashboard')">📊 &nbsp;Dashboard</div>
+    <div class="dp-nav" data-sec="alertas-bandeja" onclick="dpShow('alertas-bandeja')" id="nav-alertas-bandeja">🔔 &nbsp;Bandeja de Alertas <span id="nav-alertas-bandeja-badge" style="margin-left:auto;background:#C0392B;color:#fff;font-size:9px;font-weight:700;min-width:18px;height:18px;border-radius:9px;display:none;align-items:center;justify-content:center;padding:0 4px;"></span></div>
     <div class="dp-nav" id="nav-miembros" data-sec="miembros" onclick="dpShow('miembros')">👥 &nbsp;Directorio de Socios</div>
     <div class="dp-nav" id="nav-solicitudes" data-sec="solicitudes" onclick="dpShow('solicitudes')">📥 &nbsp;Solicitudes <span id="dp-badge" style="margin-left:auto;background:#C0392B;color:#fff;font-size:9px;font-weight:700;min-width:18px;height:18px;border-radius:9px;display:none;align-items:center;justify-content:center;padding:0 4px;"></span></div>
     <div class="dp-nav" id="nav-comunicados" data-sec="comunicados" onclick="dpShow('comunicados')">📢 &nbsp;Comunicados</div>
@@ -18004,6 +18177,18 @@ body.damas-theme .filter-tab-active { background:rgba(139,74,107,0.15); color:#5
         </div>
         <div id="segaud-kpis"></div>
         <div id="segaud-body" style="min-height:200px;"><div style="text-align:center;padding:60px;color:#8A9BB0;">Cargando...</div></div>
+      </div>
+
+      <!-- BANDEJA CENTRAL DE ALERTAS (operativas) -->
+      <div id="dp-sec-alertas-bandeja" class="dp-section" style="display:none;">
+        <div style="display:flex;align-items:flex-end;justify-content:space-between;margin-bottom:20px;flex-wrap:wrap;gap:12px;">
+          <div>
+            <div style="font-family:'Playfair Display',serif;font-size:22px;font-weight:700;color:#0D1B2A;">🔔 Bandeja de Alertas</div>
+            <div style="font-size:13px;color:#8A9BB0;margin-top:2px;">Avisos operativos del club — mora, caja, movimientos sin clasificar y acreedores.</div>
+          </div>
+          <button onclick="alertasBandejaLoad(true)" style="padding:8px 16px;background:linear-gradient(135deg,#E8B84B,#C9973A);color:#0D1B2A;border:none;border-radius:9px;font-family:'DM Sans',sans-serif;font-size:12px;font-weight:700;cursor:pointer;">🔄 Actualizar</button>
+        </div>
+        <div id="alertas-bandeja-body" style="min-height:200px;"><div style="text-align:center;padding:60px;color:#8A9BB0;">Evaluando alertas...</div></div>
       </div>
 
       <!-- ALERTAS -->
