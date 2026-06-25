@@ -470,6 +470,103 @@ exports.recordarJuntasAsambleas = onSchedule(
 );
 
 // ══════════════════════════════════════════════════════════════════════════════
+//  AVISO DE ESTACIONAMIENTO — notificaciones push por reservaciones (programado)
+//  Reservaciones Fase 3. Corre diario @ 9 AM; por cada evento que afecta el
+//  estacionamiento envía push 7 días antes, 1 día antes y el día del evento.
+//  Plantillas editables desde config/plantillas_estacionamiento (con defaults).
+//  Cancelar el evento = la notificación futura simplemente no se dispara.
+// ══════════════════════════════════════════════════════════════════════════════
+const PLANTILLAS_ESTAC_DEFAULT = {
+  t7d: '🅿️ Aviso: el {fecha} {salon} estará reservado de {hora_ini} a {hora_fin} por "{evento}". No habrá estacionamiento.',
+  t1d: '🅿️ Recordatorio: mañana {fecha} {salon} estará ocupado por "{evento}". Sin estacionamiento.',
+  t0d: '🅿️ Hoy {salon} está reservado por "{evento}". Recuerda que no hay estacionamiento.',
+};
+
+function renderPlantillaEstac(tpl, r) {
+  return String(tpl || '')
+    .replace(/\{fecha\}/g, r.fecha || '')
+    .replace(/\{hora_ini\}/g, r.horaInicio || '')
+    .replace(/\{hora_fin\}/g, r.horaFin || '')
+    .replace(/\{evento\}/g, r.evento || '')
+    .replace(/\{salon\}/g, r.salonNombre || '');
+}
+
+// Tokens de socios activos + damas león (por tipo, no por rol de seguridad)
+async function getTokensByTipos(tipos) {
+  const snap = await db.collection('usuarios').get();
+  const tokens = [];
+  snap.forEach(d => {
+    const u = d.data();
+    if (!u.fcmToken) return;
+    if (u.activo === false || u.offline) return;
+    if (tipos.includes(u.tipo)) tokens.push(u.fcmToken);
+  });
+  return [...new Set(tokens)];
+}
+
+exports.notificarEstacionamiento = onSchedule(
+  { schedule: '0 9 * * *', timeZone: 'America/Mexico_City' },
+  async () => {
+    const APP_URL = 'https://app-club-de-leones.web.app';
+    const now = new Date();
+    const today = now.toISOString().slice(0, 10);
+
+    // Plantillas editables (con fallback a defaults)
+    let plantillas = { ...PLANTILLAS_ESTAC_DEFAULT };
+    try {
+      const cfg = await db.collection('config').doc('plantillas_estacionamiento').get();
+      if (cfg.exists) plantillas = { ...plantillas, ...cfg.data() };
+    } catch (e) { console.error('Error leyendo plantillas_estacionamiento:', e.message); }
+
+    const snap = await db.collection('reservaciones')
+      .where('afectaEstacionamiento', '==', true)
+      .get();
+
+    let tokens = null; // se cargan una sola vez, solo si hay algo que enviar
+
+    for (const docSnap of snap.docs) {
+      const r = docSnap.data();
+      if (!r.fecha) continue;
+      if ((r.estado || '') === 'cancelada') continue;
+      if (r.fecha < today) continue;
+
+      const eventDate = new Date(r.fecha + 'T12:00:00-06:00');
+      const diffDays  = Math.round((eventDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+      const keyMap = { 7: '7d', 1: '1d', 0: '0d' };
+      const key = keyMap[diffDays];
+      if (!key) continue;
+
+      // Dedup transaccional: marcar enviado ANTES de notificar (evita duplicados
+      // por reintentos o ejecuciones paralelas).
+      let shouldSend = false;
+      try {
+        await db.runTransaction(async tx => {
+          const fresh = await tx.get(docSnap.ref);
+          const fd = fresh.data() || {};
+          if ((fd.estado || '') === 'cancelada') { shouldSend = false; return; }
+          const enviados = fd.notifsEstacionamiento || [];
+          if (enviados.includes(key)) { shouldSend = false; return; }
+          tx.update(docSnap.ref, { notifsEstacionamiento: FieldValue.arrayUnion(key) });
+          shouldSend = true;
+        });
+      } catch (txErr) {
+        console.error(`❌ Transacción estacionamiento ${key} reserva ${docSnap.id}:`, txErr);
+        continue;
+      }
+      if (!shouldSend) continue;
+
+      const tplKey = key === '7d' ? 't7d' : key === '1d' ? 't1d' : 't0d';
+      const body   = renderPlantillaEstac(plantillas[tplKey], r);
+      const title  = '🅿️ Estacionamiento del Club';
+
+      if (tokens === null) tokens = await getTokensByTipos(['socio', 'dama', 'viuda', 'cooperadora']);
+      await sendMulticast(tokens, title, body, APP_URL);
+      console.log(`✅ Aviso estacionamiento ${key} enviado ("${r.evento}") a ${tokens.length} tokens`);
+    }
+  }
+);
+
+// ══════════════════════════════════════════════════════════════════════════════
 //  CORREO ELECTRÓNICO — Helpers
 // ══════════════════════════════════════════════════════════════════════════════
 

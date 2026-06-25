@@ -13,7 +13,7 @@ importScripts('https://www.gstatic.com/firebasejs/10.8.0/firebase-messaging-comp
 //   - El banner de actualización queda enganchado (version.json vs APP_VERSION)
 //   - El caché del SW no se invalida en deploy (este VERSION vs APP_VERSION)
 // Bumpear las 3 juntas en cada release que requiera refresh.
-const VERSION = '20260625-007';
+const VERSION = '20260625-008';
 const CACHE   = 'leones-' + VERSION;
 const APP_URL = 'https://app-club-de-leones.web.app';
 const ICON    = 'https://res.cloudinary.com/dgfkkwypy/image/upload/c_fit,w_192,h_192/v1773701524/LCI_emblem_2color_web_leemft.png';

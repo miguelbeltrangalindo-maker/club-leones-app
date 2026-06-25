@@ -11678,6 +11678,51 @@ window.rsvCalNuevoEnFecha = function(fechaStr) {
 };
 
 // ── Modal Salón ──
+// ── Plantillas de aviso de estacionamiento (Reservaciones Fase 3) ──
+const RSV_PLANTILLAS_DEFAULT = {
+  t7d: '🅿️ Aviso: el {fecha} {salon} estará reservado de {hora_ini} a {hora_fin} por "{evento}". No habrá estacionamiento.',
+  t1d: '🅿️ Recordatorio: mañana {fecha} {salon} estará ocupado por "{evento}". Sin estacionamiento.',
+  t0d: '🅿️ Hoy {salon} está reservado por "{evento}". Recuerda que no hay estacionamiento.',
+};
+window.rsvAbrirPlantillas = async function() {
+  let p = { ...RSV_PLANTILLAS_DEFAULT };
+  try {
+    const snap = await getDoc(doc(db,'config','plantillas_estacionamiento'));
+    if (snap.exists()) p = { ...p, ...snap.data() };
+  } catch (e) { console.error('rsvAbrirPlantillas:', e); }
+  document.getElementById('rsv-tpl-7d').value = p.t7d || '';
+  document.getElementById('rsv-tpl-1d').value = p.t1d || '';
+  document.getElementById('rsv-tpl-0d').value = p.t0d || '';
+  document.getElementById('rsv-plantillas-modal').style.display = 'flex';
+};
+window.rsvCerrarPlantillas = function() {
+  document.getElementById('rsv-plantillas-modal').style.display = 'none';
+};
+window.rsvRestaurarPlantillas = function() {
+  document.getElementById('rsv-tpl-7d').value = RSV_PLANTILLAS_DEFAULT.t7d;
+  document.getElementById('rsv-tpl-1d').value = RSV_PLANTILLAS_DEFAULT.t1d;
+  document.getElementById('rsv-tpl-0d').value = RSV_PLANTILLAS_DEFAULT.t0d;
+  dpShowToast('Plantillas restauradas. Pulsa Guardar para aplicarlas.','success');
+};
+window.rsvGuardarPlantillas = async function() {
+  if (!isAdminFull()) { dpShowToast('Solo el administrador puede editar las plantillas.','error'); return; }
+  const data = {
+    t7d: document.getElementById('rsv-tpl-7d').value.trim(),
+    t1d: document.getElementById('rsv-tpl-1d').value.trim(),
+    t0d: document.getElementById('rsv-tpl-0d').value.trim(),
+    actualizadoEn: new Date().toISOString(),
+    actualizadoPor: window.currentUser?.uid || '',
+  };
+  try {
+    await setDoc(doc(db,'config','plantillas_estacionamiento'), data, { merge: true });
+    dpShowToast('Plantillas guardadas ✓','success');
+    rsvCerrarPlantillas();
+  } catch (e) {
+    console.error('rsvGuardarPlantillas:', e);
+    dpShowToast('No se pudieron guardar: ' + e.message,'error');
+  }
+};
+
 window.rsvAbrirModalSalon = async function(id) {
   // Asegurar que los rubros estén cargados para poblar el dropdown
   if (!window._finRubros || window._finRubros.length === 0) {
@@ -15667,7 +15712,7 @@ window.finCategoriaPDF = function() {
 
 // IMPORTANTE: APP_VERSION debe coincidir con "version" en version.json y con
 // VERSION en sw.js. Bumpear las 3 juntas o el banner de update queda pegado.
-const APP_VERSION = '20260625-007';
+const APP_VERSION = '20260625-008';
 
 // Referencia al SW en espera (si existe), compartida entre ambas rutas de actualización
 window._pendingSW = null;
@@ -18369,6 +18414,7 @@ body.damas-theme .filter-tab-active { background:rgba(139,74,107,0.15); color:#5
             </div>
             <div style="display:flex;gap:8px;flex-wrap:wrap;">
               <button onclick="rsvAbrirReporte()" style="padding:9px 20px;background:#0D1B2A;color:#E8B84B;border:none;border-radius:10px;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;cursor:pointer;">📊 Reporte de período</button>
+              <button onclick="rsvAbrirPlantillas()" style="padding:9px 20px;background:#fff;color:#0D1B2A;border:2px solid #E8E0D4;border-radius:10px;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;cursor:pointer;">🅿️ Avisos de estacionamiento</button>
               <button onclick="rsvAbrirModalReserva()" style="padding:9px 20px;background:linear-gradient(135deg,#E8B84B,#C9973A);color:#0D1B2A;border:none;border-radius:10px;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;cursor:pointer;">➕ Nueva Reserva</button>
               <button onclick="reservacionesLoad(true)" style="padding:9px 20px;background:#fff;color:#0D1B2A;border:2px solid #E8E0D4;border-radius:10px;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;cursor:pointer;">🔄 Actualizar</button>
             </div>
@@ -20012,6 +20058,30 @@ body.damas-theme .filter-tab-active { background:rgba(139,74,107,0.15); color:#5
     <div style="display:flex;gap:10px;justify-content:flex-end;">
       <button onclick="impactoCancelar()" style="padding:10px 22px;background:#F5F0E8;color:#0D1B2A;border:none;border-radius:10px;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;cursor:pointer;">Cancelar</button>
       <button onclick="impactoConfirmar()" style="padding:10px 22px;background:#C0392B;color:#fff;border:none;border-radius:10px;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;cursor:pointer;">Registrar de todos modos →</button>
+    </div>
+  </div>
+</div>
+
+<!-- ════ MODAL: PLANTILLAS DE AVISO DE ESTACIONAMIENTO ════ -->
+<div id="rsv-plantillas-modal" style="display:none;position:fixed;inset:0;background:rgba(13,27,42,0.7);backdrop-filter:blur(4px);z-index:10000;align-items:center;justify-content:center;padding:24px;overflow-y:auto;" onclick="if(event.target===this)rsvCerrarPlantillas()">
+  <div style="background:#fff;border-radius:18px;width:100%;max-width:580px;box-shadow:0 24px 80px rgba(13,27,42,0.35);padding:24px 28px;max-height:90vh;overflow-y:auto;">
+    <div style="font-family:'Playfair Display',serif;font-size:20px;font-weight:700;color:#0D1B2A;margin-bottom:4px;">🅿️ Avisos de estacionamiento</div>
+    <div style="font-size:12px;color:#8A9BB0;margin-bottom:16px;">Mensajes push automáticos que se envían a socios y damas león cuando un evento ocupa el estacionamiento. Se mandan a las 9:00 AM: 7 días antes, 1 día antes y el día del evento.</div>
+    <div style="background:#F8F6F1;border-radius:10px;padding:10px 14px;margin-bottom:16px;font-size:11.5px;color:#5A6B7E;">
+      Variables disponibles: <b>{fecha}</b>, <b>{hora_ini}</b>, <b>{hora_fin}</b>, <b>{evento}</b>, <b>{salon}</b>
+    </div>
+    <div class="cd-lbl">📅 7 días antes</div>
+    <textarea id="rsv-tpl-7d" rows="3" class="cd-inp" style="resize:vertical;margin-bottom:14px;"></textarea>
+    <div class="cd-lbl">📅 1 día antes</div>
+    <textarea id="rsv-tpl-1d" rows="3" class="cd-inp" style="resize:vertical;margin-bottom:14px;"></textarea>
+    <div class="cd-lbl">📅 El día del evento</div>
+    <textarea id="rsv-tpl-0d" rows="3" class="cd-inp" style="resize:vertical;margin-bottom:18px;"></textarea>
+    <div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;">
+      <button onclick="rsvRestaurarPlantillas()" style="padding:10px 18px;background:#fff;color:#8A6D2B;border:1.5px solid #E8E0D4;border-radius:10px;font-family:'DM Sans',sans-serif;font-size:12.5px;font-weight:700;cursor:pointer;">↺ Restaurar predeterminados</button>
+      <div style="display:flex;gap:10px;">
+        <button onclick="rsvCerrarPlantillas()" style="padding:10px 22px;background:#F5F0E8;color:#0D1B2A;border:none;border-radius:10px;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;cursor:pointer;">Cancelar</button>
+        <button onclick="rsvGuardarPlantillas()" style="padding:10px 22px;background:linear-gradient(135deg,#E8B84B,#C9973A);color:#0D1B2A;border:none;border-radius:10px;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;cursor:pointer;">💾 Guardar</button>
+      </div>
     </div>
   </div>
 </div>
