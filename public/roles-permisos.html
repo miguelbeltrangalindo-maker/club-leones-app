@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Permisos por Rol — Club de Leones Veracruz</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', Arial, sans-serif; background: #f5f5f0; color: #1a1a2e; font-size: 13px; }
+  .page { max-width: 960px; margin: 0 auto; padding: 40px 32px; }
+
+  h1 { font-size: 22px; color: #0D1B2A; margin-bottom: 4px; }
+  .subtitle { color: #8A9BB0; font-size: 13px; margin-bottom: 32px; }
+
+  h2 { font-size: 14px; font-weight: 700; color: #0D1B2A; margin: 28px 0 10px;
+       padding: 8px 14px; background: #E8B84B22; border-left: 4px solid #E8B84B;
+       border-radius: 0 6px 6px 0; }
+
+  table { width: 100%; border-collapse: collapse; margin-bottom: 8px; background: #fff;
+          border-radius: 8px; overflow: hidden; box-shadow: 0 1px 4px rgba(0,0,0,0.07); }
+  thead tr { background: #0D1B2A; color: #fff; }
+  thead th { padding: 10px 14px; text-align: left; font-size: 12px; font-weight: 600; }
+  thead th:not(:first-child) { text-align: center; width: 100px; }
+  tbody tr:nth-child(even) { background: #f9f9f7; }
+  tbody tr:hover { background: #fffbf0; }
+  td { padding: 8px 14px; border-bottom: 1px solid #eee; }
+  td:not(:first-child) { text-align: center; font-size: 16px; }
+
+  .yes  { color: #1A7A4A; }
+  .no   { color: #C0392B; }
+  .part { color: #E67E22; font-size: 12px; font-weight: 600; }
+  .admin-only { background: #FFF3F3 !important; }
+  .admin-only td:first-child::after { content: ' ★'; color: #C0392B; font-size: 10px; }
+
+  .resumen table { border: 2px solid #E8B84B; }
+  .resumen thead tr { background: #C9973A; }
+
+  .legend { display: flex; gap: 20px; margin: 24px 0 12px; font-size: 12px; color: #555; flex-wrap: wrap; }
+  .legend span { display: flex; align-items: center; gap: 5px; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; }
+  .dot-red { background: #FFF3F3; border: 1px solid #C0392B; }
+  .dot-gold { background: #E8B84B22; border: 1px solid #E8B84B; }
+
+  .nota { font-size: 11px; color: #8A9BB0; margin-top: 4px; margin-bottom: 20px; padding-left: 14px; }
+
+  .footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid #ddd;
+            font-size: 11px; color: #aaa; text-align: center; }
+
+  @media print {
+    body { background: #fff; }
+    .page { padding: 20px; }
+    table { box-shadow: none; border: 1px solid #ddd; }
+    h2 { break-before: avoid; }
+    tr { break-inside: avoid; }
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <h1>Permisos por Rol — Club de Leones Veracruz A.C.</h1>
+  <div class="subtitle">Generado: 14 de abril de 2026 &nbsp;·&nbsp; Versión del sistema: 20260413-070</div>
+
+  <div class="legend">
+    <span><span style="font-size:16px;color:#1A7A4A;">✅</span> Permitido</span>
+    <span><span style="font-size:16px;color:#C0392B;">❌</span> Sin acceso</span>
+    <span><span style="font-size:12px;font-weight:700;color:#E67E22;">PARCIAL</span> Acceso limitado</span>
+    <span><div class="dot dot-red"></div> Fila con fondo rosa = exclusivo de Admin</span>
+  </div>
+
+  <!-- ── RESUMEN ── -->
+  <h2>Resumen ejecutivo</h2>
+  <div class="resumen">
+  <table>
+    <thead>
+      <tr><th>Capacidad general</th><th>Admin</th><th>Subadmin</th><th>Tesorero</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>Módulos accesibles</td><td class="yes">Todos</td><td class="yes">Casi todos</td><td class="part">PARCIAL</td></tr>
+      <tr><td>Puede eliminar datos</td><td class="yes">✅</td><td class="no">❌</td><td class="no">❌</td></tr>
+      <tr><td>Ve finanzas completas del club</td><td class="yes">✅</td><td class="yes">✅</td><td class="no">❌</td></tr>
+      <tr><td>Ve auditoría e integridad</td><td class="yes">✅</td><td class="no">❌</td><td class="no">❌</td></tr>
+      <tr><td>Acceso en móvil (panel admin)</td><td class="yes">✅</td><td class="yes">✅</td><td class="no">❌</td></tr>
+      <tr><td>Acceso en escritorio (desktop)</td><td class="yes">✅</td><td class="yes">✅</td><td class="part">PARCIAL</td></tr>
+      <tr><td>Gestión de socios</td><td class="yes">✅</td><td class="yes">✅</td><td class="no">❌</td></tr>
+      <tr><td>Recibos, cuotas y pagos</td><td class="yes">✅</td><td class="yes">✅</td><td class="yes">✅</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p class="nota">★ Diferencia clave Admin vs Subadmin: únicamente la capacidad de <strong>eliminar datos</strong> y acceso total a <strong>auditoría</strong>. En escritura son prácticamente equivalentes.<br>
+  ★ Tesorero se limita a recibos, cuotas, pagos, adeudos y mutualista. Sin acceso a socios, finanzas del club, reservas, acreedores ni auditoría.</p>
+
+  <!-- ── SOCIOS ── -->
+  <h2>👥 Gestión de Socios y Usuarios</h2>
+  <table>
+    <thead><tr><th>Acción</th><th>Admin</th><th>Subadmin</th><th>Tesorero</th></tr></thead>
+    <tbody>
+      <tr><td>Ver directorio de socios</td><td class="yes">✅</td><td class="yes">✅</td><td class="no">❌</td></tr>
+      <tr><td>Crear / editar socio</td><td class="yes">✅</td><td class="yes">✅</td><td class="no">❌</td></tr>
+      <tr><td>Activar / inactivar socio</td><td class="yes">✅</td><td class="yes">✅</td><td class="no">❌</td></tr>
+      <tr class="admin-only"><td>Eliminar socio</td><td class="yes">✅</td><td class="no">❌</td><td class="no">❌</td></tr>
+      <tr><td>Cambiar rol del socio</td><td class="yes">✅</td><td class="yes">✅</td><td class="no">❌</td></tr>
+      <tr><td>Resetear contraseña</td><td class="yes">✅</td><td class="yes">✅</td><td class="no">❌</td></tr>
+      <tr><td>Aprobar / denegar solicitudes de ingreso</td><td class="yes">✅</td><td class="yes">✅</td><td class="no">❌</td></tr>
+      <tr><td>Crear socio offline (sin cuenta)</td><td class="yes">✅</td><td class="yes">✅</td><td class="no">❌</td></tr>
+      <tr><td>Activar cuenta offline</td><td class="yes">✅</td><td class="yes">✅</td><td class="no">❌</td></tr>
+      <tr><td>Gestionar cargos y cargo histórico</td><td class="yes">✅</td><td class="yes">✅</td><td class="no">❌</td></tr>
+    </tbody>
+  </table>
+
+  <!-- ── COMUNICADOS ── -->
+  <h2>💬 Comunicados</h2>
+  <table>
+    <thead><tr><th>Acción</th><th>Admin</th><th>Subadmin</th><th>Tesorero</th></tr></thead>
+    <tbody>
+      <tr><td>Ver comunicados</td><td class="yes">✅</td><td class="yes">✅</td><td class="yes">✅</td></tr>
+      <tr><td>Crear / publicar comunicado</td><td class="yes">✅</td><td class="yes">✅</td><td class="no">❌</td></tr>
+      <tr><td>Editar comunicado</td><td class="yes">✅</td><td class="yes">✅</td><td class="no">❌</td></tr>
+      <tr class="admin-only"><td>Eliminar comunicado</td><td class="yes">✅</td><td class="no">❌</td><td class="no">❌</td></tr>
+      <tr><td>Activar / desactivar comunicado</td><td class="yes">✅</td><td class="yes">✅</td><td class="no">❌</td></tr>
+    </tbody>
+  </table>
+  <p class="nota">Nota: Presidente y Secretario (cargos, no roles) también pueden publicar comunicados.</p>
+
+  <!-- ── RECIBOS ── -->
+  <h2>🧾 Recibos y Cuotas</h2>
+  <table>
+    <thead><tr><th>Acción</th><th>Admin</th><th>Subadmin</th><th>Tesorero</th></tr></thead>
+    <tbody>
+      <tr><td>Ver todos los recibos</td><td class="yes">✅</td><td class="yes">✅</td><td class="yes">✅</td></tr>
+      <tr><td>Crear / editar recibo</td><td class="yes">✅</td><td class="yes">✅</td><td class="yes">✅</td></tr>
+      <tr><td>Marcar recibo como pagado / pendiente</td><td class="yes">✅</td><td class="yes">✅</td><td class="yes">✅</td></tr>
+      <tr><td>Generar lote de recibos</td><td class="yes">✅</td><td class="yes">✅</td><td class="yes">✅</td></tr>
+      <tr><td>Imprimir recibos (selección)</td><td class="yes">✅</td><td class="yes">✅</td><td class="yes">✅</td></tr>
+      <tr class="admin-only"><td>Eliminar recibo individual</td><td class="yes">✅</td><td class="no">❌</td><td class="no">❌</td></tr>
+      <tr class="admin-only"><td>Eliminar mes completo de recibos</td><td class="yes">✅</td><td class="no">❌</td><td class="no">❌</td></tr>
+      <tr><td>Configurar tarifas anuales</td><td class="yes">✅</td><td class="yes">✅</td><td class="yes">✅</td></tr>
+    </tbody>
+  </table>
+
+  <!-- ── PAGOS Y ADEUDOS ── -->
+  <h2>💳 Pagos y Adeudos</h2>
+  <table>
+    <thead><tr><th>Acción</th><th>Admin</th><th>Subadmin</th><th>Tesorero</th></tr></thead>
+    <tbody>
+      <tr><td>Ver pagos y adeudos</td><td class="yes">✅</td><td class="yes">✅</td><td class="yes">✅</td></tr>
+      <tr><td>Crear / editar / eliminar pago</td><td class="yes">✅</td><td class="yes">✅</td><td class="yes">✅</td></tr>
+      <tr><td>Crear / editar / eliminar adeudo</td><td class="yes">✅</td><td class="yes">✅</td><td class="yes">✅</td></tr>
+      <tr><td>Enviar notificación push de adeudo</td><td class="yes">✅</td><td class="yes">✅</td><td class="yes">✅</td></tr>
+    </tbody>
+  </table>
+
+  <!-- ── MUTUALISTA ── -->
+  <h2>🏦 Fondo Mutualista</h2>
+  <table>
+    <thead><tr><th>Acción</th><th>Admin</th><th>Subadmin</th><th>Tesorero</th></tr></thead>
+    <tbody>
+      <tr><td>Ver módulo mutualista (escritorio)</td><td class="yes">✅</td><td class="yes">✅</td><td class="no">❌</td></tr>
+      <tr><td>Registrar pago mutualista</td><td class="yes">✅</td><td class="yes">✅</td><td class="yes">✅</td></tr>
+      <tr><td>Editar / eliminar pago mutualista</td><td class="yes">✅</td><td class="yes">✅</td><td class="yes">✅</td></tr>
+      <tr class="admin-only"><td>Cargar saldo inicial mutualista</td><td class="yes">✅</td><td class="no">❌</td><td class="no">❌</td></tr>
+    </tbody>
+  </table>
+
+  <!-- ── MOVIMIENTOS FINANCIEROS ── -->
+  <h2>📊 Movimientos Financieros del Club</h2>
+  <table>
+    <thead><tr><th>Acción</th><th>Admin</th><th>Subadmin</th><th>Tesorero</th></tr></thead>
+    <tbody>
+      <tr><td>Ver movimientos (ingreso / egreso)</td><td class="yes">✅</td><td class="yes">✅</td><td class="no">❌</td></tr>
+      <tr><td>Crear / editar movimiento</td><td class="yes">✅</td><td class="yes">✅</td><td class="no">❌</td></tr>
+      <tr class="admin-only"><td>Eliminar movimiento financiero</td><td class="yes">✅</td><td class="no">❌</td><td class="no">❌</td></tr>
+      <tr><td>Gestionar rubros (categorías)</td><td class="yes">✅</td><td class="yes">✅</td><td class="no">❌</td></tr>
+      <tr class="admin-only"><td>Eliminar rubro</td><td class="yes">✅</td><td class="no">❌</td><td class="no">❌</td></tr>
+      <tr><td>Ver reportes financieros</td><td class="yes">✅</td><td class="yes">✅</td><td class="no">❌</td></tr>
+      <tr><td>Ver saldo banco / caja</td><td class="yes">✅</td><td class="yes">✅</td><td class="no">❌</td></tr>
+      <tr class="admin-only"><td>Configurar saldo inicial bancos / caja</td><td class="yes">✅</td><td class="no">❌</td><td class="no">❌</td></tr>
+    </tbody>
+  </table>
+
+  <!-- ── FONDO DE RESERVA ── -->
+  <h2>🗂️ Fondo de Reserva</h2>
+  <table>
+    <thead><tr><th>Acción</th><th>Admin</th><th>Subadmin</th><th>Tesorero</th></tr></thead>
+    <tbody>
+      <tr><td>Ver fondo de reserva</td><td class="yes">✅</td><td class="yes">✅</td><td class="no">❌</td></tr>
+      <tr><td>Registrar depósito / retiro</td><td class="yes">✅</td><td class="yes">✅</td><td class="no">❌</td></tr>
+      <tr><td>Editar movimiento</td><td class="yes">✅</td><td class="yes">✅</td><td class="no">❌</td></tr>
+      <tr class="admin-only"><td>Eliminar movimiento</td><td class="yes">✅</td><td class="no">❌</td><td class="no">❌</td></tr>
+      <tr class="admin-only"><td>Cargar saldo inicial</td><td class="yes">✅</td><td class="no">❌</td><td class="no">❌</td></tr>
+    </tbody>
+  </table>
+
+  <!-- ── ACREEDORES ── -->
+  <h2>📋 Acreedores</h2>
+  <table>
+    <thead><tr><th>Acción</th><th>Admin</th><th>Subadmin</th><th>Tesorero</th></tr></thead>
+    <tbody>
+      <tr><td>Ver acreedores y movimientos</td><td class="yes">✅</td><td class="yes">✅</td><td class="no">❌</td></tr>
+      <tr><td>Crear / editar acreedor</td><td class="yes">✅</td><td class="yes">✅</td><td class="no">❌</td></tr>
+      <tr><td>Registrar / editar movimiento de acreedor</td><td class="yes">✅</td><td class="yes">✅</td><td class="no">❌</td></tr>
+      <tr class="admin-only"><td>Eliminar acreedor / movimiento</td><td class="yes">✅</td><td class="no">❌</td><td class="no">❌</td></tr>
+    </tbody>
+  </table>
+
+  <!-- ── AUDITORÍA ── -->
+  <h2>🔍 Auditoría e Integridad del Sistema</h2>
+  <table>
+    <thead><tr><th>Acción</th><th>Admin</th><th>Subadmin</th><th>Tesorero</th></tr></thead>
+    <tbody>
+      <tr class="admin-only"><td>Ver huella digital (todos los logs)</td><td class="yes">✅</td><td class="no">❌</td><td class="no">❌</td></tr>
+      <tr class="admin-only"><td>Ver control de integridad / anomalías</td><td class="yes">✅</td><td class="no">❌</td><td class="no">❌</td></tr>
+      <tr class="admin-only"><td>Ver eventos sensibles</td><td class="yes">✅</td><td class="no">❌</td><td class="no">❌</td></tr>
+      <tr class="admin-only"><td>Ver alertas de seguridad</td><td class="yes">✅</td><td class="no">❌</td><td class="no">❌</td></tr>
+      <tr class="admin-only"><td>Marcar evento como revisado</td><td class="yes">✅</td><td class="no">❌</td><td class="no">❌</td></tr>
+      <tr class="admin-only"><td>Exportar auditoría a CSV</td><td class="yes">✅</td><td class="no">❌</td><td class="no">❌</td></tr>
+      <tr><td>Generar entradas de auditoría (automático)</td><td class="yes">✅</td><td class="yes">✅</td><td class="yes">✅</td></tr>
+    </tbody>
+  </table>
+  <p class="nota">Los registros de auditoría son <strong>inmutables</strong> — nadie puede eliminarlos, ni el admin. Solo se pueden marcar como "revisados".</p>
+
+  <!-- ── OTROS MÓDULOS ── -->
+  <h2>🍻 Otros módulos</h2>
+  <table>
+    <thead><tr><th>Módulo / Acción</th><th>Admin</th><th>Subadmin</th><th>Tesorero</th></tr></thead>
+    <tbody>
+      <tr><td>Ver y gestionar Botanas (viernes)</td><td class="yes">✅</td><td class="yes">✅</td><td class="no">❌</td></tr>
+      <tr><td>Ver y gestionar Damas (eventos, causas, listas)</td><td class="yes">✅</td><td class="yes">✅</td><td class="no">❌</td></tr>
+      <tr><td>Ver y gestionar Palomas (reuniones)</td><td class="yes">✅</td><td class="yes">✅</td><td class="no">❌</td></tr>
+      <tr><td>Ver estadísticas (escritorio)</td><td class="yes">✅</td><td class="yes">✅</td><td class="yes">✅</td></tr>
+      <tr><td>Ver directorio de socios (móvil)</td><td class="yes">✅</td><td class="yes">✅</td><td class="yes">✅</td></tr>
+    </tbody>
+  </table>
+
+  <div class="footer">
+    Club de Leones Veracruz A.C. — app-club-de-leones.web.app &nbsp;·&nbsp; Documento interno, no distribuir
+  </div>
+</div>
+</body>
+</html>

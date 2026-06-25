@@ -28,8 +28,12 @@ service cloud.firestore {
     // Nota: 'usuario' se trata igual que 'miembro' para compatibilidad con
     // documentos legacy mientras se ejecuta la migración migrate-roles.js
 
+    // 100% de los usuarios tienen doc en /roles/ tras migrate-roles.js
+    // y ensureUserDoc() lo crea en cada login. Si por accidente faltara,
+    // tratamos al usuario como 'pendiente' (sin privilegios) hasta su próximo
+    // login. Esto evita un segundo get() a /usuarios/ por cada evaluación.
     function getEffectiveRol() {
-      return roleDocExists() ? currentRoleDoc().rol : currentUserDoc().rol;
+      return roleDocExists() ? currentRoleDoc().rol : 'pendiente';
     }
 
     function isAdmin() {
@@ -45,12 +49,7 @@ service cloud.firestore {
     }
 
     function isTesorero() {
-      return isAuthenticated() && (
-        getEffectiveRol() == 'tesorero' ||
-        (roleDocExists()
-          ? false
-          : (currentUserDoc().cargos != null && currentUserDoc().cargos.hasAny(['Tesorero'])))
-      );
+      return isAuthenticated() && getEffectiveRol() == 'tesorero';
     }
 
     function isMutualista() {
@@ -105,16 +104,182 @@ service cloud.firestore {
     // ── Validación de campos editables por el propio usuario ──────────────────
 
     function selfEditableUserFieldsOnly() {
+      // NOTA: `correo` NO está aquí a propósito. El cambio de correo debe pasar
+      // por la Cloud Function `cambiarCorreoUsuario` para mantener Firebase Auth
+      // y Firestore en sincronía. Esa función usa Admin SDK y bypasea estas reglas.
+      // Cada campo acepta string (con su tamaño máximo) o ausente/null (borrado).
       let changed = request.resource.data.diff(resource.data).changedKeys();
       let d = request.resource.data;
-      return changed.hasOnly(['nombre','apellido','correo','whatsapp','photoURL','conyuge','fcmToken'])
-        && (!changed.hasAny(['nombre'])    || (d.nombre    is string && d.nombre.size()    <= 80))
-        && (!changed.hasAny(['apellido'])  || (d.apellido  is string && d.apellido.size()  <= 80))
-        && (!changed.hasAny(['correo'])    || (d.correo    is string && d.correo.size()    <= 100))
-        && (!changed.hasAny(['whatsapp'])  || (d.whatsapp  is string && d.whatsapp.size()  <= 20))
-        && (!changed.hasAny(['conyuge'])   || (d.conyuge   is string && d.conyuge.size()   <= 120))
-        && (!changed.hasAny(['photoURL'])  || (d.photoURL  is string && d.photoURL.size()  <= 500))
-        && (!changed.hasAny(['fcmToken'])  || (d.fcmToken  is string && d.fcmToken.size()  <= 300));
+      return changed.hasOnly(['nombre','apellido','whatsapp','photoURL','conyuge','fechaNacimiento','fcmToken'])
+        && (!changed.hasAny(['nombre'])          || d.get('nombre',         null) == null || (d.nombre          is string && d.nombre.size()          <= 80))
+        && (!changed.hasAny(['apellido'])        || d.get('apellido',       null) == null || (d.apellido        is string && d.apellido.size()        <= 80))
+        && (!changed.hasAny(['whatsapp'])        || d.get('whatsapp',       null) == null || (d.whatsapp        is string && d.whatsapp.size()        <= 20))
+        && (!changed.hasAny(['conyuge'])         || d.get('conyuge',        null) == null || (d.conyuge         is string && d.conyuge.size()         <= 120))
+        && (!changed.hasAny(['fechaNacimiento'])|| d.get('fechaNacimiento',null) == null || (d.fechaNacimiento is string && d.fechaNacimiento.size() <= 10))
+        && (!changed.hasAny(['photoURL'])        || d.get('photoURL',       null) == null || (d.photoURL        is string && d.photoURL.size()        <= 500))
+        && (!changed.hasAny(['fcmToken'])        || d.get('fcmToken',       null) == null || (d.fcmToken        is string && d.fcmToken.size()        <= 300));
+    }
+
+    // ── Anti-escalación de privilegios ────────────────────────────────────────
+    // Self-register: el usuario no puede asignarse rol distinto a 'pendiente'
+    function validSelfRegisterUsuario() {
+      let d = request.resource.data;
+      return (!d.keys().hasAny(['rol']) || d.rol == 'pendiente')
+          && (!d.keys().hasAny(['nombre']) || (d.nombre is string && d.nombre.size() <= 80))
+          && (!d.keys().hasAny(['apellido']) || (d.apellido is string && d.apellido.size() <= 80))
+          && (!d.keys().hasAny(['correo']) || (d.correo is string && d.correo.size() <= 100))
+          && (!d.keys().hasAny(['estado']) || d.estado != 'baja');
+    }
+    function validSelfRegisterRole() {
+      let d = request.resource.data;
+      return (!d.keys().hasAny(['rol']) || d.rol == 'pendiente');
+    }
+    // Subadmin: no puede tocar admins ni promover a admin, y tiene una lista
+    // de campos privilegiados que sólo admin puede modificar.
+    // Campos bloqueados: correo (sync con Auth requiere Cloud Function),
+    // tipo (gate de privilegios), cargos (títulos honoríficos / display, solo admin),
+    // numeroSocio (identidad oficial), estado (alta/baja).
+    function validSubadminUpdateUsuario() {
+      let blocked = ['correo','tipo','cargos','numeroSocio','estado'];
+      let changed = request.resource.data.diff(resource.data).affectedKeys();
+      return resource.data.get('rol', '') != 'admin'
+          && request.resource.data.get('rol', '') != 'admin'
+          && !changed.hasAny(blocked);
+    }
+    function validSubadminUpdateRole() {
+      // Subadmin sólo puede tocar 'rol' y 'activo'; no campos administrativos.
+      let allowed = ['rol','activo','updatedAt'];
+      let changed = request.resource.data.diff(resource.data).affectedKeys();
+      return resource.data.get('rol', '') != 'admin'
+          && request.resource.data.get('rol', '') != 'admin'
+          && changed.hasOnly(allowed);
+    }
+
+    // ── Validaciones de colecciones financieras ───────────────────────────────
+    // Diseñadas livianas: solo prevenir abuso (montos negativos, strings enormes,
+    // tipos incorrectos). No restringen campos para mantener flexibilidad.
+
+    // Helpers de validación de campo: permiten que el campo sea opcional, null, o
+    // del tipo correcto con límites. Esto es importante porque el cliente guarda
+    // muchos campos como null (ej. notas:null cuando el usuario no escribió nada).
+    function fieldNumOk(d, k, max)    { return !(k in d) || d[k] == null || (d[k] is number && d[k] >= 0 && d[k] <= max); }
+    function fieldStrOk(d, k, max)    { return !(k in d) || d[k] == null || (d[k] is string && d[k].size() <= max); }
+    function fieldStrInOk(d, k, list) { return !(k in d) || d[k] == null || (d[k] is string && d[k] in list); }
+    function fieldYearOk(d, k)        { return !(k in d) || d[k] == null || (d[k] is number && d[k] >= 2000 && d[k] <= 2100); }
+    function fieldBoolOk(d, k)        { return !(k in d) || d[k] == null || d[k] is bool; }
+
+    function validRecibo() {
+      let d = request.resource.data;
+      return fieldNumOk(d, 'total', 10000000)
+          && fieldNumOk(d, 'montoPagado', 10000000)
+          && fieldNumOk(d, 'c1', 10000000) && fieldNumOk(d, 'c2', 10000000)
+          && fieldNumOk(d, 'c3', 10000000) && fieldNumOk(d, 'c4', 10000000)
+          && fieldNumOk(d, 'c5', 10000000) && fieldNumOk(d, 'c6', 10000000)
+          && fieldNumOk(d, 'c7', 10000000) && fieldNumOk(d, 'descuento', 10000000)
+          && fieldStrInOk(d, 'estado', ['pagado','parcial','pendiente','vencido','condonado'])
+          && fieldStrOk(d, 'notas', 1500)
+          && fieldStrOk(d, 'nombreSocio', 200)
+          && fieldStrOk(d, 'mes', 20)
+          && fieldYearOk(d, 'anio');
+    }
+
+    // Inmutabilidad en updates de recibos: socioUID, autorUID y creado no pueden cambiar.
+    // Si un recibo se asignó por error, hay que borrarlo y crearlo de nuevo (queda en huella).
+    // Excepción: migración offline→online (admin transfiere recibos al nuevo uid de Auth);
+    // se reconoce por el marcador migracionDesde que apunta al uid anterior.
+    function reciboInmutables() {
+      let prev = resource.data;
+      let next = request.resource.data;
+      let socioOk = next.get('socioUID', null) == prev.get('socioUID', null)
+                 || (isAdminOrSub()
+                     && next.get('migracionDesde', '') == prev.get('socioUID', ''));
+      return socioOk
+          && next.get('autorUID', null) == prev.get('autorUID', null)
+          && next.get('creado', null) == prev.get('creado', null);
+    }
+
+    function validMovimientoFin() {
+      let d = request.resource.data;
+      return fieldNumOk(d, 'monto', 50000000)
+          && fieldStrInOk(d, 'tipo', ['ingreso','egreso'])
+          && fieldStrOk(d, 'concepto', 1000)
+          && fieldStrOk(d, 'fecha', 30)
+          && fieldStrOk(d, 'notas', 1500)
+          && fieldStrOk(d, 'referencia', 300)
+          && fieldStrOk(d, 'salon', 200)
+          && fieldStrOk(d, 'acreedorNombre', 200)
+          && fieldStrOk(d, 'reservaId', 100);
+    }
+
+    function validMutualistaPago() {
+      let d = request.resource.data;
+      return fieldNumOk(d, 'monto', 10000000)
+          && fieldStrInOk(d, 'tipo', ['pago','adeudo','saldo_inicial'])
+          && fieldStrOk(d, 'concepto', 500)
+          && fieldStrOk(d, 'nota', 800)
+          && fieldBoolOk(d, 'soloRegistro');
+    }
+
+    function validPagoSocio() {
+      let d = request.resource.data;
+      return fieldNumOk(d, 'montoTotal', 50000000)
+          && fieldStrOk(d, 'nombreSocio', 200)
+          && fieldStrOk(d, 'referencia', 300);
+    }
+
+    function validMovAcreedor() {
+      let d = request.resource.data;
+      return fieldNumOk(d, 'monto', 50000000)
+          && fieldStrInOk(d, 'tipo', ['deuda','pago'])
+          && fieldStrOk(d, 'concepto', 1000);
+    }
+
+    function validPagoLegacy() {
+      let d = request.resource.data;
+      return fieldNumOk(d, 'monto', 10000000)
+          && fieldStrOk(d, 'concepto', 1000)
+          && fieldStrOk(d, 'notas', 1500);
+    }
+
+    // Lecturas de comunicados: documento de tracking por usuario × comunicado.
+    // Los campos son cortos por diseño; impedir que se inflen.
+    function validComunicadoLectura() {
+      let d = request.resource.data;
+      return fieldStrOk(d, 'comunicadoId', 100)
+          && fieldStrOk(d, 'uid', 100)
+          && fieldStrOk(d, 'nombre', 200)
+          && fieldStrOk(d, 'rol', 50)
+          && fieldBoolOk(d, 'leido')
+          && fieldStrOk(d, 'ultimaEdicionLeida', 50)
+          && fieldStrOk(d, 'fechaLectura', 50);
+    }
+
+    // Notificaciones push: dispara un Cloud Function. Limitar strings para
+    // que un tesorero comprometido no pueda inyectar payloads enormes.
+    // Esquema según trigger notificarAdeudoManual: tipo, uid, nombre, meses, total.
+    function validNotificacionPush() {
+      let d = request.resource.data;
+      return fieldStrOk(d, 'tipo', 100)
+          && fieldStrOk(d, 'uid', 100)
+          && fieldStrOk(d, 'nombre', 200)
+          && fieldStrOk(d, 'total', 50)
+          && fieldNumOk(d, 'meses', 240)
+          && fieldStrOk(d, 'title', 200)
+          && fieldStrOk(d, 'body', 1000);
+    }
+
+    // Auditoría: el socio sólo puede registrar acciones a nombre propio,
+    // los strings tienen límites para evitar XSS persistente, y `accion`
+    // debe ser una cadena segura (letras, números, guiones bajos).
+    function validAuditoria() {
+      let d = request.resource.data;
+      return d.uid is string && d.uid == request.auth.uid
+          && fieldStrOk(d, 'nombre', 200)
+          && fieldStrOk(d, 'rol', 50)
+          && d.accion is string && d.accion.size() > 0 && d.accion.size() <= 100
+          && d.accion.matches('^[a-zA-Z0-9_]+$')
+          && fieldStrOk(d, 'ip', 60)
+          && fieldStrOk(d, 'dispositivo', 300);
     }
 
     // ── Validación de campos de comunicados ───────────────────────────────────
@@ -125,32 +290,80 @@ service cloud.firestore {
           && d.texto  is string && d.texto.size()  <= 3000;
     }
 
+    // ── Validación de solicitudes ─────────────────────────────────────────────
+
+    // Cargos válidos para solicitudes: si el campo `cargo` está presente,
+    // debe estar en esta lista. Bloquea que un socio se solicite a sí mismo
+    // 'admin' o 'subadmin' por consola. (Tesorero ya no da privilegios vía
+    // cargos[]; los permisos viven exclusivamente en /roles/{uid}.rol.)
+    function validSolicitud() {
+      let d = request.resource.data;
+      let cargosOk = [
+        'Presidente','Past Presidente','Vicepresidente','Segundo Vicepresidente',
+        'Tesorero','Secretario','Domador','Retorcedor',
+        'Vocal un año','Vocal dos años',
+        'Comité de Afiliación','Comité de Fondo de Reserva'
+      ];
+      return d.keys().hasAll(['uid'])
+          && d.uid  is string && d.uid.size() > 0
+          && d.uid == request.auth.uid
+          && (!('tipo'  in d) || (d.tipo  is string && d.tipo.size()  <= 60))
+          && (!('cargo' in d) || (d.cargo is string && d.cargo in cargosOk));
+    }
+
+    // ── Validación de movimientos del fondo de reserva ────────────────────────
+
+    function validFondoReserva() {
+      let d = request.resource.data;
+      return d.keys().hasAll(['tipo', 'monto', 'concepto', 'fecha'])
+          && d.tipo    is string
+          && (d.tipo == 'deposito' || d.tipo == 'retiro' || d.tipo == 'saldo_inicial')
+          && d.monto   is number && d.monto   >= 0
+          && d.concepto is string && d.concepto.size() >= 1 && d.concepto.size() <= 300
+          && d.fecha   is string && d.fecha.size() == 10;
+    }
+
     // ════════════════════════════════════════════════════════════
     //  COLECCIONES
     // ════════════════════════════════════════════════════════════
 
     match /usuarios/{userId} {
       // Lectura individual: solo miembros aprobados.
-      // Lista/query: miembros aprobados O documentos offline no migrados
-      // (para búsqueda en formulario de registro antes de autenticarse).
+      // Lista/query: miembros aprobados, o solo documentos offline:true (flujo de activación
+      // de cuenta donde el nuevo socio aún no tiene auth y necesita encontrar su perfil).
+      // Nota: los docs offline contienen solo datos ingresados por el admin (sin contraseña).
       allow get:  if isApprovedMember();
-      // list sin auth: permite docs offline (filtro de migrado se hace en el cliente)
+      // El branch de offline:true permite que un usuario nuevo (pendiente,
+      // aún sin aprobación) encuentre su perfil offline durante la activación.
+      // Requiere auth para evitar enumeración pública del directorio.
       allow list: if isApprovedMember()
-                    || resource.data.offline == true;
-      allow create: if isSelf(userId) || isAdminOrSub();
-      allow update: if isAdminOrSub() || (isSelf(userId) && selfEditableUserFieldsOnly());
+                    || (isAuthenticated() && resource.data.offline == true);
+      // Self-register: el usuario sólo puede crear su propio doc con rol='pendiente'.
+      // Admin/subadmin puede crear cualquier perfil (alta de socios offline, etc.)
+      allow create: if (isSelf(userId) && validSelfRegisterUsuario()) || isAdminOrSub();
+      // Subadmin no puede promover a admin ni modificar admins existentes.
+      allow update: if isAdmin()
+                    || (isSubadmin() && validSubadminUpdateUsuario())
+                    || (isSelf(userId) && selfEditableUserFieldsOnly());
       allow delete: if isAdmin();
     }
 
     match /roles/{userId} {
       allow read: if isApprovedMember();
-      allow create: if isSelf(userId) || isAdminOrSub();
-      allow update: if isAdminOrSub();
+      // Self-create del role-doc sólo se acepta con rol='pendiente'.
+      allow create: if (isSelf(userId) && validSelfRegisterRole()) || isAdminOrSub();
+      // Subadmin no puede promover a admin ni modificar admins.
+      allow update: if isAdmin() || (isSubadmin() && validSubadminUpdateRole());
       allow delete: if isAdmin();
     }
 
     match /comunicados/{docId} {
-      allow read: if isApprovedMember();
+      // Lectura: admin/subadmin todo; aprobado todo lo NO-directo;
+      // comunicados con destinatarios='directo' sólo el destinatarioUID indicado.
+      allow read: if isAdminOrSub()
+                  || (isApprovedMember() && (
+                       resource.data.get('destinatarios','') != 'directo'
+                       || resource.data.get('destinatarioUID','') == request.auth.uid));
       allow create, update: if isAdminOrSub() && validComunicado();
       allow delete: if isAdminOrSub();
     }
@@ -158,21 +371,23 @@ service cloud.firestore {
     match /comunicado_lecturas/{docId} {
       allow read: if isAdminOrSub() ||
         (isAuthenticated() && resource.data.uid == request.auth.uid);
-      allow create, update: if isAuthenticated() &&
-        request.resource.data.uid == request.auth.uid;
+      allow create, update: if isAuthenticated()
+        && request.resource.data.uid == request.auth.uid
+        && validComunicadoLectura();
       allow delete: if isAdmin();
     }
 
     match /solicitudes/{docId} {
       allow read: if isAdminOrSub();
-      allow create: if isAuthenticated();
+      allow create: if isMember() && validSolicitud();
       allow update, delete: if isAdminOrSub();
     }
 
     match /pagos/{docId} {
       allow read: if isAdminOrSub() || isTesorero() ||
         (isAuthenticated() && resource.data.uid == request.auth.uid);
-      allow create, update, delete: if isAdminOrSub() || isTesorero();
+      allow create, update: if (isAdminOrSub() || isTesorero()) && validPagoLegacy();
+      allow delete: if isAdminOrSub() || isTesorero();
     }
 
     match /adeudos/{userId} {
@@ -183,15 +398,25 @@ service cloud.firestore {
     match /recibos/{docId} {
       // Admin, tesorero y mutualista pueden leer todos los recibos.
       // Socios solo pueden leer sus propios recibos (campo socioUID).
-      // El filtro de Firestore WHERE socioUID==uid cumple la regla automáticamente.
       allow read: if isAdminOrSub() || isTesorero() || isMutualista() ||
         (isAuthenticated() && resource.data.socioUID == request.auth.uid);
-      allow create, update, delete: if isAdminOrSub() || isTesorero();
+      allow create: if (isAdminOrSub() || isTesorero()) && validRecibo();
+      allow update: if (isAdminOrSub() || isTesorero()) && validRecibo() && reciboInmutables();
+      allow delete: if isAdminOrSub() || isTesorero();
     }
 
     match /mutualista_pagos/{docId} {
       allow read: if isAdminOrSub() || isTesorero() || isMutualista();
-      allow create, update, delete: if isAdminOrSub() || isTesorero();
+      allow create, update: if (isAdminOrSub() || isTesorero()) && validMutualistaPago();
+      allow delete: if isAdminOrSub() || isTesorero();
+    }
+
+    // pagos_socios: comprobantes de pagos compuestos / parciales
+    match /pagos_socios/{docId} {
+      allow read: if isAdminOrSub() || isTesorero() ||
+        (isAuthenticated() && resource.data.socioUID == request.auth.uid);
+      allow create, update: if (isAdminOrSub() || isTesorero()) && validPagoSocio();
+      allow delete: if isAdminOrSub() || isTesorero();
     }
 
     match /tarifas/{docId} {
@@ -200,14 +425,18 @@ service cloud.firestore {
     }
 
     match /auditoria/{docId} {
-      allow create: if isApprovedMember();
+      // Cualquier socio aprobado registra acciones, pero validamos los campos
+      // para evitar XSS persistente contra el admin que ve la huella digital.
+      allow create: if isApprovedMember() && validAuditoria();
       allow read: if isAdmin();
-      allow update, delete: if false;
+      allow update: if isAdmin();   // Permite marcar como revisado
+      allow delete: if false;
     }
 
     match /fondo_reserva/{docId} {
       allow read: if isAdminOrSub();
-      allow create, update: if isAdminOrSub();
+      allow create: if isAdminOrSub() && validFondoReserva();
+      allow update: if isAdminOrSub();
       allow delete: if isAdmin();
     }
 
@@ -227,8 +456,7 @@ service cloud.firestore {
     // movimientos_financieros: registro de ingresos y gastos del club
     match /movimientos_financieros/{docId} {
       allow read: if isAdminOrSub();
-      allow create: if isAdminOrSub();
-      allow update: if isAdminOrSub();
+      allow create, update: if isAdminOrSub() && validMovimientoFin();
       allow delete: if isAdmin();
     }
 
@@ -236,17 +464,22 @@ service cloud.firestore {
     // disparan el Cloud Function notificarAdeudoManual.
     // El Cloud Function usa Admin SDK y no está sujeto a estas reglas.
     match /notificaciones_push/{docId} {
-      allow create: if isAdminOrSub() || isTesorero();
+      allow create: if (isAdminOrSub() || isTesorero()) && validNotificacionPush();
       allow read, update, delete: if false;
     }
 
     // palomas: módulo La Paloma (reuniones de damas)
-    // - Lectura y RSVP (update): damas, viudas, cooperadoras
+    // - Lectura y RSVP: damas, viudas, cooperadoras, palomas
     // - Crear / eliminar paloma: dama_admin_paloma + admin/subadmin
+    // - Update por dama común: SOLO el campo asistencias.<su_uid> (no puede tocar
+    //   el resto del documento). Admin / dama_admin_paloma sin restricción.
     match /palomas/{docId} {
       allow read:   if isAdminOrSub() || hasDamaAccess() || isDamaPalomaAdmin();
       allow create: if isAdminOrSub() || isDamaPalomaAdmin();
-      allow update: if isAdminOrSub() || isDamaPalomaAdmin() || hasDamaAccess();
+      allow update: if isAdminOrSub() || isDamaPalomaAdmin()
+                    || (hasDamaAccess()
+                        && request.resource.data.diff(resource.data).affectedKeys()
+                            .hasOnly(['asistencias']));
       allow delete: if isAdminOrSub() || isDamaPalomaAdmin();
     }
 
@@ -262,18 +495,142 @@ service cloud.firestore {
       allow create, update, delete: if isAdminOrSub() || isDamaAdmin();
     }
     match /damas_listas/{docId} {
-      // Toggle de ítems: cualquier dama puede actualizar (completado:bool por ítem)
+      // Toggle de ítems: cualquier dama puede actualizar SÓLO el campo `items`
+      // (toggle de completado). El resto del doc (titulo, fechaCreación, etc.)
+      // queda protegido. Admin / dama_admin sin restricción.
       allow read: if isAdminOrSub() || isDamaAdmin() || hasDamaAccess();
       allow create, delete: if isAdminOrSub() || isDamaAdmin();
-      allow update: if isAdminOrSub() || isDamaAdmin() || hasDamaAccess();
+      allow update: if isAdminOrSub() || isDamaAdmin()
+                    || (hasDamaAccess()
+                        && request.resource.data.diff(resource.data).affectedKeys()
+                            .hasOnly(['items']));
     }
 
     // botanas: rol de botana del viernes
     // - Lectura: socios activos (tipo='socio') + admin/subadmin
-    // - Escritura: cantinero + admin/subadmin
+    // - Crear/borrar: cantinero + admin/subadmin
+    // - Update general: cantinero + admin/subadmin
+    // - Update parcial: cualquier socio aprobado puede modificar SOLO el campo `asistentes`
+    //   (para confirmar/cancelar su asistencia a la botana)
     match /botanas/{docId} {
       allow read: if isAdminOrSub() || isSocio();
-      allow create, update, delete: if isAdminOrSub() || isCantinero();
+      allow create, delete: if isAdminOrSub() || isCantinero();
+      allow update: if isAdminOrSub() || isCantinero()
+                    || (isApprovedMember() && isSocio()
+                        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['asistentes']));
+    }
+
+    // acreedores: directorio de acreedores del club
+    match /acreedores/{docId} {
+      allow read: if isAdminOrSub();
+      allow create, update: if isAdminOrSub();
+      allow delete: if isAdmin();
+    }
+
+    // movimientos_acreedores: historial de deudas y pagos a acreedores
+    match /movimientos_acreedores/{docId} {
+      allow read: if isAdminOrSub();
+      allow create, update: if isAdminOrSub() && validMovAcreedor();
+      allow delete: if isAdmin();
+    }
+
+    // ── Validación de salones y reservaciones ────────────────────────────────
+    function validSalon() {
+      let d = request.resource.data;
+      return fieldStrOk(d, 'nombre', 200)
+          && fieldNumOk(d, 'capacidad', 100000)
+          && fieldNumOk(d, 'costoSugerido', 50000000)
+          && fieldNumOk(d, 'descuentoFijo', 50000000)
+          && fieldStrOk(d, 'rubroNombre', 200)
+          && fieldStrOk(d, 'fotoURL', 500)
+          && fieldStrOk(d, 'notas', 1500)
+          && fieldBoolOk(d, 'afectaEstacionamiento')
+          && fieldBoolOk(d, 'activo');
+    }
+    function validReservacion() {
+      let d = request.resource.data;
+      return fieldStrOk(d, 'salonId', 100)
+          && fieldStrOk(d, 'salonNombre', 200)
+          && fieldStrOk(d, 'fecha', 30)
+          && fieldStrOk(d, 'horaInicio', 10)
+          && fieldStrOk(d, 'horaFin', 10)
+          && fieldStrOk(d, 'evento', 300)
+          && fieldStrOk(d, 'anfitrion', 200)
+          && fieldStrOk(d, 'contacto', 200)
+          && fieldNumOk(d, 'numInvitados', 100000)
+          && fieldStrOk(d, 'observaciones', 1500)
+          && fieldNumOk(d, 'costo', 50000000)
+          && fieldNumOk(d, 'descuentoAplicado', 50000000)
+          && fieldNumOk(d, 'iva', 50000000)
+          && fieldBoolOk(d, 'aplicaIva')
+          && fieldNumOk(d, 'anticipo', 50000000)
+          && fieldNumOk(d, 'saldoPagado', 50000000)
+          && fieldNumOk(d, 'fianzaMonto', 50000000)
+          && fieldStrOk(d, 'fianzaNota', 800)
+          && fieldStrInOk(d, 'estado', ['tentativa','confirmada','realizada','cancelada'])
+          && fieldStrOk(d, 'motivoCancelacion', 1500)
+          && fieldStrInOk(d, 'tipoDevolucion', ['ninguna','parcial','total','sin_pagos'])
+          && fieldNumOk(d, 'montoDevuelto', 50000000)
+          && fieldBoolOk(d, 'afectaEstacionamiento')
+          && fieldBoolOk(d, 'fianzaRecibida')
+          && fieldBoolOk(d, 'realizadaAuto')
+          && fieldBoolOk(d, 'movimientosEliminados')
+          && fieldStrOk(d, 'realizadaEn', 30)
+          && fieldStrOk(d, 'canceladoEn', 30);
+    }
+
+    // salones: catálogo de salones rentables
+    match /salones/{docId} {
+      allow read: if isAdminOrSub();
+      allow create, update: if isAdminOrSub() && validSalon();
+      allow delete: if isAdmin();
+    }
+
+    // reservaciones: agenda de eventos
+    match /reservaciones/{docId} {
+      allow read: if isAdminOrSub();
+      allow create, update: if isAdminOrSub() && validReservacion();
+      allow delete: if isAdmin();
+    }
+
+    // ── Validación módulo Secretario ───────────────────────────────────────
+    function validSecConcepto() {
+      let d = request.resource.data;
+      return fieldStrOk(d, 'nombre', 300)
+          && fieldStrInOk(d, 'tipo', ['fijo','calculado'])
+          && fieldNumOk(d, 'tasa', 50000000)
+          && fieldStrOk(d, 'unidad', 60)
+          && fieldStrOk(d, 'categoria', 100)
+          && fieldBoolOk(d, 'activo')
+          && fieldNumOk(d, 'orden', 1000);
+    }
+    function validSecInforme() {
+      let d = request.resource.data;
+      return fieldStrOk(d, 'ejercicio', 30)
+          && fieldNumOk(d, 'anio', 2100)
+          && fieldNumOk(d, 'mes', 12)
+          && fieldStrOk(d, 'mesNombre', 30)
+          && fieldStrInOk(d, 'estado', ['borrador','firmado'])
+          && fieldStrOk(d, 'secretarioNombre', 300)
+          && fieldStrOk(d, 'secretarioUid', 100)
+          && fieldStrOk(d, 'fechaFirma', 30)
+          && fieldNumOk(d, 'total', 999999999);
+      // Nota: campos `conceptos` (array) y `socios` (map) se aceptan sin validación
+      // estricta de tipo. Sus límites están implícitos por el tamaño del documento.
+    }
+
+    // secretario_conceptos: catálogo de conceptos del informe del secretario
+    match /secretario_conceptos/{docId} {
+      allow read: if isAdminOrSub();
+      allow create, update: if isAdminOrSub() && validSecConcepto();
+      allow delete: if isAdmin();
+    }
+
+    // secretario_informes: informes mensuales firmados o en borrador
+    match /secretario_informes/{docId} {
+      allow read: if isAdminOrSub();
+      allow create, update: if isAdminOrSub() && validSecInforme();
+      allow delete: if isAdmin();
     }
 
     // Catch-all: bloquea cualquier colección no declarada explícitamente
