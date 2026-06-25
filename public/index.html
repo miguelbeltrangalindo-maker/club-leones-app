@@ -5562,7 +5562,7 @@ async function dpShow(sec) {
   secEl.style.display='block';
   document.querySelector(`[data-sec="${sec}"]`)?.classList.add('active-nav');
 
-  const titles={dashboard:'Dashboard','alertas-bandeja':'🔔 Bandeja de Alertas',miembros:'Usuarios y Directorio',solicitudes:'Pendientes y Solicitudes',comunicados:'Comunicados PRO',pagos:'Pagos y Adeudos',aging:'Antigüedad de Adeudos',recibos:'Recibos de Cuotas',cuotas:'Tarifas Base',estadisticas:'Informe del Tesorero',auditoria:'Actividad del Sistema',mutualista:'Fondo Mutualista','saldo-bancos':'Saldo en Bancos y Caja','movimientos-fin':'Movimientos de Ingresos y Gastos','reportes-fin':'Reportes Financieros','rubros-fin':'Gestión de Rubros','cargos-hist':'Historial de Cargos',acreedores:'Acreedores — Control de Deuda',reservaciones:'Reservaciones de Salones','sec-informe':'Informe del Secretario',integridad:'🛡️ Control de Integridad','eventos-sensibles':'⚠️ Eventos Sensibles','seguridad-aud':'🔒 Seguridad','alertas-aud':'🚨 Alertas de Integridad'};
+  const titles={dashboard:'Dashboard','alertas-bandeja':'🔔 Bandeja de Alertas',miembros:'Usuarios y Directorio',solicitudes:'Pendientes y Solicitudes',comunicados:'Comunicados PRO',pagos:'Pagos y Adeudos',aging:'Antigüedad de Adeudos',recibos:'Recibos de Cuotas',cuotas:'Tarifas Base',estadisticas:'Informe del Tesorero',auditoria:'Actividad del Sistema',mutualista:'Fondo Mutualista','saldo-bancos':'Saldo en Bancos y Caja','movimientos-fin':'Movimientos de Ingresos y Gastos','reportes-fin':'Reportes Financieros','rubros-fin':'Gestión de Rubros','cargos-hist':'Historial de Cargos',acreedores:'Acreedores — Control de Deuda',reservaciones:'Reservaciones de Salones','sec-informe':'Informe del Secretario','cambio-directiva':'🔄 Cambio de Directiva',integridad:'🛡️ Control de Integridad','eventos-sensibles':'⚠️ Eventos Sensibles','seguridad-aud':'🔒 Seguridad','alertas-aud':'🚨 Alertas de Integridad'};
   document.getElementById('dp-topbar-title').textContent=titles[sec]||'Panel Admin';
 
   if(sec==='dashboard') dashboardLoad();
@@ -5591,6 +5591,7 @@ async function dpShow(sec) {
   if(sec==='acreedores') acLoad();
   if(sec==='reservaciones') await reservacionesLoad();
   if(sec==='sec-informe') await secLoad();
+  if(sec==='cambio-directiva') await cambioDirectivaLoad();
 }
 window.dpShow = dpShow;
 globalThis.dpShow = dpShow;
@@ -6656,6 +6657,278 @@ function estadoCuentaAbrirVentana(htmlContent, u) {
   win.document.write(`<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><title>Estado de cuenta — ${esc(fullName)}</title><link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;700;900&family=DM+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet"><style>${css}</style></head><body>${acciones}${htmlContent}</body></html>`);
   win.document.close();
 }
+
+// ══════════════════════════════════════════════════════════════
+//  CAMBIO DE DIRECTIVA — agrega toda la situación financiera del
+//  club para el acta de entrega-recepción. Saldos/deudas a la fecha
+//  actual; ingresos/egresos/eventos filtrados al periodo de gestión.
+//  Reutiliza las fórmulas canónicas de cada módulo (no recalcula
+//  distinto). Genera un acta imprimible (PDF vía window.print).
+// ══════════════════════════════════════════════════════════════
+const CD_MESES = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+
+async function cambioDirectivaCompute(desde, hasta, force = false) {
+  const [recibos, mutPagos, usuarios, movs, fondoRes, acreedores, movAcre, reservas, cfgB, cfgC] = await Promise.all([
+    getCollectionCached('recibos', 30000, force).catch(() => []),
+    getCollectionCached('mutualista_pagos', 30000, force).catch(() => []),
+    getCollectionCached('usuarios', 30000, force).catch(() => (window.allMembers || [])),
+    getCollectionCached('movimientos_financieros', 30000, force).catch(() => []),
+    getCollectionCached('fondo_reserva', 30000, force).catch(() => []),
+    getCollectionCached('acreedores', 30000, force).catch(() => []),
+    getCollectionCached('movimientos_acreedores', 30000, force).catch(() => []),
+    getCollectionCached('reservaciones', 30000, force).catch(() => []),
+    getDoc(doc(db,'config','saldo_bancos_inicial')).catch(() => ({ exists: () => false })),
+    getDoc(doc(db,'config','saldo_caja_inicial')).catch(() => ({ exists: () => false })),
+  ]);
+
+  // ── Saldos actuales (todo el histórico) ──
+  const esBanco = d => !d || d === 'banco';
+  const esCaja  = d => d === 'caja';
+  const sumDest = (pred, tipo) => movs.filter(m => pred(m.destino) && m.tipo === tipo).reduce((s,m) => s + Number(m.monto || 0), 0);
+  const saldoBanco = (cfgB.exists() ? Number(cfgB.data().monto || 0) : 0) + sumDest(esBanco,'ingreso') - sumDest(esBanco,'egreso');
+  const saldoCaja  = (cfgC.exists() ? Number(cfgC.data().monto || 0) : 0) + sumDest(esCaja,'ingreso')  - sumDest(esCaja,'egreso');
+
+  // ── Fondo de Reserva ──
+  const frDep = fondoRes.filter(m => m.tipo === 'deposito' || m.tipo === 'saldo_inicial').reduce((s,m) => s + Number(m.monto || 0), 0);
+  const frRet = fondoRes.filter(m => m.tipo === 'retiro').reduce((s,m) => s + Number(m.monto || 0), 0);
+  const saldoReserva = frDep - frRet;
+
+  // ── Mutualista (separado por nota fiscal) ──
+  const mut = (typeof calcSaldoMutualista === 'function') ? calcSaldoMutualista(recibos, mutPagos, null) : { saldoTotal: 0 };
+  const saldoMutualista = Number(mut.saldoTotal || 0);
+
+  // ── Cuentas por cobrar: aging de socios activos ──
+  const sociosMap = {};
+  (usuarios || []).forEach(u => { const k = u.uid || u.id; if (k) sociosMap[k] = u; });
+  const hoy = new Date(); hoy.setHours(0,0,0,0);
+  const aging = { b0_30:0, b31_60:0, b61_90:0, b90_mas:0, total:0, nSocios:0 };
+  const porSocio = new Set();
+  (recibos || []).forEach(r => {
+    if ((r.estado || '').toLowerCase() === 'pagado') return;
+    const saldo = Math.max(0, Number(r.total || 0) - Number(r.montoPagado || 0));
+    if (saldo <= 0) return;
+    if (sociosMap[r.socioUID]?.estado === 'baja') return;
+    const mIdx = CD_MESES.indexOf(r.mes || 'Enero');
+    const fechaR = new Date(Number(r.anio || 2026), mIdx < 0 ? 0 : mIdx, 28);
+    const dias = Math.max(0, Math.floor((hoy - fechaR) / 86400000));
+    aging.total += saldo;
+    if (dias <= 30) aging.b0_30 += saldo; else if (dias <= 60) aging.b31_60 += saldo;
+    else if (dias <= 90) aging.b61_90 += saldo; else aging.b90_mas += saldo;
+    if (r.socioUID) porSocio.add(r.socioUID);
+  });
+  aging.nSocios = porSocio.size;
+
+  // ── Cuentas por pagar: acreedores con saldo ──
+  const cuentasPagar = [];
+  (acreedores || []).filter(a => a.activo !== false).forEach(a => {
+    const mv = (movAcre || []).filter(m => m.acreedorId === a.id);
+    const deuda  = mv.filter(m => m.tipo === 'deuda').reduce((s,m) => s + Number(m.monto || 0), 0);
+    const pagado = mv.filter(m => m.tipo === 'pago').reduce((s,m) => s + Number(m.monto || 0), 0);
+    const saldo = deuda - pagado;
+    if (saldo > 0.005) cuentasPagar.push({ nombre: a.nombre || 'Acreedor', saldo });
+  });
+  cuentasPagar.sort((a,b) => b.saldo - a.saldo);
+  const totalPagar = cuentasPagar.reduce((s,x) => s + x.saldo, 0);
+
+  // ── Movimientos del periodo (ingresos/egresos por rubro) ──
+  const enRango = f => f && String(f) >= desde && String(f) <= hasta;
+  const grpIng = {}, grpEgr = {};
+  (movs || []).filter(m => enRango(m.fecha)).forEach(m => {
+    const key = m.rubroNombre || 'Sin categoría';
+    if (m.tipo === 'ingreso') grpIng[key] = (grpIng[key] || 0) + Number(m.monto || 0);
+    else if (m.tipo === 'egreso') grpEgr[key] = (grpEgr[key] || 0) + Number(m.monto || 0);
+  });
+  const ingresosPeriodo = Object.entries(grpIng).map(([rubro,monto]) => ({ rubro, monto })).sort((a,b) => b.monto - a.monto);
+  const egresosPeriodo  = Object.entries(grpEgr).map(([rubro,monto]) => ({ rubro, monto })).sort((a,b) => b.monto - a.monto);
+  const totalIng = ingresosPeriodo.reduce((s,x) => s + x.monto, 0);
+  const totalEgr = egresosPeriodo.reduce((s,x) => s + x.monto, 0);
+
+  // ── Eventos/reservaciones cobrados en el periodo ──
+  const eventos = (reservas || [])
+    .filter(r => enRango(r.fecha) && (r.estado || '') !== 'cancelada')
+    .map(r => ({ evento: r.evento || '(sin nombre)', salon: r.salonNombre || '', fecha: r.fecha || '', estado: r.estado || '', cobrado: Number(r.anticipo || 0) + Number(r.saldoPagado || 0) }))
+    .sort((a,b) => String(a.fecha).localeCompare(String(b.fecha)));
+  const totalEventos = eventos.reduce((s,e) => s + e.cobrado, 0);
+
+  const disponible = saldoBanco + saldoCaja + saldoReserva;
+  const patrimonioNeto = disponible + aging.total - totalPagar;
+
+  return {
+    desde, hasta,
+    saldoBanco, saldoCaja, saldoReserva, disponible, saldoMutualista,
+    aging, cuentasPagar, totalPagar,
+    ingresosPeriodo, egresosPeriodo, totalIng, totalEgr, netoPeriodo: totalIng - totalEgr,
+    eventos, totalEventos,
+    porCobrar: aging.total, patrimonioNeto,
+  };
+}
+
+function cdDateStr(d) {
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+}
+
+window.cambioDirectivaLoad = async function(force = false) {
+  // Defaults de periodo: último año de gestión
+  const elD = document.getElementById('cd-desde'), elH = document.getElementById('cd-hasta');
+  if (elH && !elH.value) elH.value = cdDateStr(new Date());
+  if (elD && !elD.value) { const d = new Date(); d.setFullYear(d.getFullYear() - 1); elD.value = cdDateStr(d); }
+  const desde = (elD && elD.value) || '2000-01-01';
+  const hasta = (elH && elH.value) || cdDateStr(new Date());
+
+  const body = document.getElementById('cd-body');
+  if (body) body.innerHTML = '<div style="text-align:center;padding:60px;color:#8A9BB0;">Calculando situación financiera...</div>';
+  let d;
+  try {
+    d = await cambioDirectivaCompute(desde, hasta, force);
+  } catch (e) {
+    console.error('cambioDirectivaLoad ERROR:', e);
+    if (body) body.innerHTML = '<div style="text-align:center;padding:60px;color:#C0392B;">No se pudo calcular la situación financiera.</div>';
+    return;
+  }
+  window._cdData = d;
+  if (!body) return;
+
+  const card = (titulo, contenido, extra='') => `<div style="background:#fff;border:1.5px solid #EDE8DF;border-radius:12px;padding:16px 18px;${extra}">
+    <div style="font-family:'Playfair Display',serif;font-size:14px;font-weight:700;color:#0D1B2A;margin-bottom:10px;">${titulo}</div>${contenido}</div>`;
+  const fila = (k, v, color='#0D1B2A', bold=false) => `<div style="display:flex;justify-content:space-between;gap:10px;padding:5px 0;border-bottom:1px solid #F5F0E8;">
+    <span style="font-size:12.5px;color:#5A6B7E;">${esc(k)}</span><span style="font-size:12.5px;font-weight:${bold?'800':'600'};color:${color};font-family:'Playfair Display',serif;">${fmtMXN(v)}</span></div>`;
+
+  const kpi = (val, lbl, color) => `<div style="flex:1;min-width:150px;background:#fff;border:1.5px solid #EDE8DF;border-left:4px solid ${color};border-radius:11px;padding:14px 16px;">
+    <div style="font-family:'Playfair Display',serif;font-size:19px;font-weight:800;color:${color};">${fmtMXN(val)}</div>
+    <div style="font-size:11px;color:#8A9BB0;font-weight:600;text-transform:uppercase;letter-spacing:.5px;margin-top:3px;">${lbl}</div></div>`;
+
+  const dispCard = card('🏦 Disponibilidad', fila('Bancos (operativo)', d.saldoBanco) + fila('Caja (efectivo)', d.saldoCaja) + fila('Fondo de Reserva', d.saldoReserva) + fila('Total disponible', d.disponible, '#1A7A4A', true));
+
+  const cobrarCard = card('🟢 Cuentas por cobrar (socios)',
+    fila('0–30 días', d.aging.b0_30, '#1A7A4A') + fila('31–60 días', d.aging.b31_60, '#C9973A') + fila('61–90 días', d.aging.b61_90, '#E67E22') + fila('90+ días', d.aging.b90_mas, '#C0392B') + fila(`Total por cobrar · ${d.aging.nSocios} socio${d.aging.nSocios!==1?'s':''}`, d.porCobrar, '#0D1B2A', true));
+
+  const pagarCard = card('🔴 Cuentas por pagar (acreedores)',
+    (d.cuentasPagar.length ? d.cuentasPagar.map(a => fila(a.nombre, a.saldo, '#C0392B')).join('') : '<div style="font-size:12px;color:#8A9BB0;padding:6px 0;">Sin deuda con acreedores.</div>') + fila('Total por pagar', d.totalPagar, '#C0392B', true));
+
+  const mutCard = card('⚫ Fondo Mutualista', fila('Saldo del fondo', d.saldoMutualista, '#5A6B7E', true) + `<div style="font-size:11px;color:#8A9BB0;margin-top:8px;font-style:italic;">Se reporta por separado: por observación fiscal, el dinero de la mutualista no se mezcla con las cuentas del club.</div>`);
+
+  const ingCard = card(`📈 Ingresos del periodo`,
+    (d.ingresosPeriodo.length ? d.ingresosPeriodo.map(x => fila(x.rubro, x.monto, '#1A7A4A')).join('') : '<div style="font-size:12px;color:#8A9BB0;padding:6px 0;">Sin ingresos en el periodo.</div>') + fila('Total ingresos', d.totalIng, '#1A7A4A', true));
+  const egrCard = card(`📉 Egresos del periodo`,
+    (d.egresosPeriodo.length ? d.egresosPeriodo.map(x => fila(x.rubro, x.monto, '#C0392B')).join('') : '<div style="font-size:12px;color:#8A9BB0;padding:6px 0;">Sin egresos en el periodo.</div>') + fila('Total egresos', d.totalEgr, '#C0392B', true) + fila('Resultado neto', d.netoPeriodo, d.netoPeriodo>=0?'#1A7A4A':'#C0392B', true));
+
+  const evCont = d.eventos.length
+    ? `<div style="max-height:240px;overflow:auto;">${d.eventos.map(e => `<div style="display:flex;justify-content:space-between;gap:8px;padding:5px 0;border-bottom:1px solid #F5F0E8;">
+        <span style="font-size:12px;color:#5A6B7E;">${esc(e.evento)}<span style="color:#A8B3C2;"> · ${esc(e.salon)} · ${esc(e.fecha)}</span></span>
+        <span style="font-size:12.5px;font-weight:700;color:#1A7A4A;font-family:'Playfair Display',serif;">${fmtMXN(e.cobrado)}</span></div>`).join('')}</div>${fila('Total cobrado en eventos', d.totalEventos, '#1A7A4A', true)}`
+    : '<div style="font-size:12px;color:#8A9BB0;padding:6px 0;">Sin eventos cobrados en el periodo.</div>';
+  const evCard = card(`📆 Eventos del periodo`, evCont);
+
+  body.innerHTML = `
+    <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px;">
+      ${kpi(d.disponible, 'Disponible (banco+caja+reserva)', '#1A7A4A')}
+      ${kpi(d.porCobrar, 'Por cobrar (socios)', '#C9973A')}
+      ${kpi(d.totalPagar, 'Por pagar (acreedores)', '#C0392B')}
+      ${kpi(d.patrimonioNeto, 'Patrimonio neto estimado', '#0D1B2A')}
+    </div>
+    <div style="font-size:11px;color:#8A9BB0;margin-bottom:16px;">Periodo de gestión analizado: <b>${esc(d.desde)}</b> a <b>${esc(d.hasta)}</b> · Saldos y deudas a la fecha de hoy.</div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px;">
+      ${dispCard}${mutCard}${cobrarCard}${pagarCard}${ingCard}${egrCard}
+    </div>
+    <div style="margin-top:14px;">${evCard}</div>`;
+};
+
+window.cambioDirectivaGenerarActa = async function() {
+  let d = window._cdData;
+  if (!d) { try { await cambioDirectivaLoad(); d = window._cdData; } catch(e) {} }
+  if (!d) { dpShowToast('Genera primero la situación financiera','error'); return; }
+
+  const v = id => (document.getElementById(id)?.value || '').trim();
+  const linea = (txt) => txt ? esc(txt) : '<span style="display:inline-block;min-width:220px;border-bottom:1px solid #555;">&nbsp;</span>';
+  const lugar = v('cd-lugar');
+  const fechaActa = v('cd-fecha-acta');
+  const fechaActaTxt = fechaActa ? (parseDateLocal(fechaActa) || new Date()).toLocaleDateString('es-MX',{day:'2-digit',month:'long',year:'numeric'}) : '';
+  const notas = v('cd-notas');
+
+  const win = window.open('','_blank');
+  if (!win) { dpShowToast('Permite ventanas emergentes para generar el acta','error'); return; }
+
+  const fmt = n => fmtMXN(n);
+  const trMoney = (k,val,opt={}) => `<tr${opt.tot?' class="tot"':''}><td>${esc(k)}</td><td class="num">${fmt(val)}</td></tr>`;
+  const tabla = (titulo, rows, foot) => `<table><thead><tr><th colspan="2">${esc(titulo)}</th></tr></thead><tbody>${rows}${foot||''}</tbody></table>`;
+
+  const dispRows = trMoney('Bancos (cuenta operativa)', d.saldoBanco) + trMoney('Caja (efectivo)', d.saldoCaja) + trMoney('Fondo de Reserva', d.saldoReserva) + trMoney('TOTAL DISPONIBLE', d.disponible, {tot:true});
+  const cobrarRows = trMoney('Antigüedad 0–30 días', d.aging.b0_30) + trMoney('Antigüedad 31–60 días', d.aging.b31_60) + trMoney('Antigüedad 61–90 días', d.aging.b61_90) + trMoney('Antigüedad 90+ días', d.aging.b90_mas) + trMoney(`TOTAL POR COBRAR A SOCIOS (${d.aging.nSocios})`, d.porCobrar, {tot:true});
+  const pagarRows = (d.cuentasPagar.length ? d.cuentasPagar.map(a => trMoney(a.nombre, a.saldo)).join('') : '<tr><td colspan="2" class="empty">Sin deuda con acreedores.</td></tr>') + trMoney('TOTAL POR PAGAR', d.totalPagar, {tot:true});
+  const ingRows = (d.ingresosPeriodo.length ? d.ingresosPeriodo.map(x => trMoney(x.rubro, x.monto)).join('') : '<tr><td colspan="2" class="empty">Sin ingresos.</td></tr>') + trMoney('TOTAL INGRESOS', d.totalIng, {tot:true});
+  const egrRows = (d.egresosPeriodo.length ? d.egresosPeriodo.map(x => trMoney(x.rubro, x.monto)).join('') : '<tr><td colspan="2" class="empty">Sin egresos.</td></tr>') + trMoney('TOTAL EGRESOS', d.totalEgr, {tot:true}) + trMoney('RESULTADO NETO DEL PERIODO', d.netoPeriodo, {tot:true});
+  const evRows = d.eventos.length
+    ? `<table><thead><tr><th>Evento</th><th>Salón</th><th>Fecha</th><th class="num">Cobrado</th></tr></thead><tbody>${d.eventos.map(e => `<tr><td>${esc(e.evento)}</td><td>${esc(e.salon)}</td><td>${esc(e.fecha)}</td><td class="num">${fmt(e.cobrado)}</td></tr>`).join('')}<tr class="tot"><td colspan="3">TOTAL COBRADO EN EVENTOS</td><td class="num">${fmt(d.totalEventos)}</td></tr></tbody></table>`
+    : '<p class="empty">Sin eventos cobrados en el periodo.</p>';
+
+  const firma = (nombre, cargo, rol) => `<div class="firma"><div class="firma-line"></div><div class="firma-nom">${nombre ? esc(nombre) : '&nbsp;'}</div><div class="firma-cargo">${esc(cargo)}</div><div class="firma-rol">${esc(rol)}</div></div>`;
+
+  const html = `<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><title>Acta de Entrega-Recepción — Club de Leones Veracruz</title>
+  <style>
+    @page { size: letter portrait; margin: 14mm; }
+    * { box-sizing: border-box; }
+    body { font-family: 'DM Sans', Arial, sans-serif; color: #0D1B2A; font-size: 12px; line-height: 1.5; max-width: 800px; margin: auto; padding: 10px; }
+    h1 { font-family: 'Playfair Display', serif; font-size: 18px; text-align: center; margin: 0 0 2px; }
+    .sub { text-align: center; color: #8A9BB0; font-size: 11px; margin-bottom: 18px; }
+    .intro { text-align: justify; margin-bottom: 18px; }
+    h2 { font-size: 12.5px; font-weight: 700; background: #0D1B2A; color: #fff; padding: 6px 12px; border-radius: 5px; margin: 22px 0 8px; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    table { width: 100%; border-collapse: collapse; margin-bottom: 10px; }
+    th { background: #F5F0E8; text-align: left; padding: 6px 10px; font-size: 11px; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    td { padding: 5px 10px; border-bottom: 1px solid #eee; }
+    td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+    tr.tot td { font-weight: 800; border-top: 2px solid #0D1B2A; background: #FBF7EF; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    td.empty, .empty { color: #8A9BB0; font-style: italic; }
+    .nota { font-size: 10.5px; color: #555; font-style: italic; margin: 4px 0 14px; }
+    .notas-box { white-space: pre-wrap; border: 1px solid #ddd; border-radius: 6px; padding: 10px; min-height: 50px; }
+    .firmas { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 30px 20px; margin-top: 50px; }
+    .firma { width: 45%; text-align: center; }
+    .firma-line { border-top: 1px solid #333; margin-bottom: 5px; }
+    .firma-nom { font-weight: 700; font-size: 11.5px; }
+    .firma-cargo { font-size: 10.5px; color: #444; }
+    .firma-rol { font-size: 10px; color: #888; text-transform: uppercase; letter-spacing: .5px; }
+    .acciones { text-align: center; margin: 16px 0; }
+    .acciones button { padding: 9px 20px; background: #C9973A; color: #fff; border: none; border-radius: 7px; font-size: 13px; font-weight: 700; cursor: pointer; }
+    @media print { .acciones { display: none !important; } body { padding: 0; } }
+  </style></head><body>
+    <div class="acciones"><button onclick="window.print()">🖨 Imprimir / Guardar PDF</button></div>
+    <h1>ACTA DE ENTREGA-RECEPCIÓN ADMINISTRATIVA</h1>
+    <div class="sub">Club de Leones de Veracruz, A.C.</div>
+    <p class="intro">En la ciudad de ${linea(lugar)}, siendo el día ${linea(fechaActaTxt)}, se reúnen para hacer constar la entrega formal de la administración del Club de Leones de Veracruz, A.C.: por la directiva <b>saliente</b>, ${linea(v('cd-pres-sale'))} (Presidente), ${linea(v('cd-sec-sale'))} (Secretario) y ${linea(v('cd-tes-sale'))} (Tesorero); y por la directiva <b>entrante</b>, ${linea(v('cd-pres-entra'))} (Presidente), ${linea(v('cd-sec-entra'))} (Secretario) y ${linea(v('cd-tes-entra'))} (Tesorero). A continuación se detalla la situación financiera del club obtenida del sistema administrativo.</p>
+
+    <h2>1. Disponibilidad financiera (a la fecha)</h2>
+    ${tabla('Saldos en cuentas', dispRows)}
+    <h2>2. Fondo Mutualista</h2>
+    ${tabla('Saldo del fondo mutualista', trMoney('Saldo del Fondo Mutualista', d.saldoMutualista, {tot:true}))}
+    <p class="nota">Por observación fiscal, el Fondo Mutualista se reporta por separado y no se mezcla con las cuentas del club.</p>
+    <h2>3. Cuentas por cobrar (adeudos de socios)</h2>
+    ${tabla('Cartera por antigüedad', cobrarRows)}
+    <h2>4. Cuentas por pagar (acreedores)</h2>
+    ${tabla('Deuda con acreedores', pagarRows)}
+    <h2>5. Patrimonio neto estimado</h2>
+    ${tabla('Disponible + por cobrar − por pagar', trMoney('PATRIMONIO NETO ESTIMADO', d.patrimonioNeto, {tot:true}))}
+    <h2>6. Ingresos del periodo (${esc(d.desde)} a ${esc(d.hasta)})</h2>
+    ${tabla('Ingresos por rubro', ingRows)}
+    <h2>7. Egresos del periodo (${esc(d.desde)} a ${esc(d.hasta)})</h2>
+    ${tabla('Egresos por rubro', egrRows)}
+    <h2>8. Eventos cobrados en el periodo</h2>
+    ${evRows}
+    <h2>9. Documentación entregada y observaciones</h2>
+    <div class="notas-box">${notas ? esc(notas) : 'Anexar a mano la relación de documentos entregados (contratos, conciliaciones, situación fiscal/IMSS, nómina, bar, etc.).'}</div>
+
+    <div class="firmas">
+      ${firma(v('cd-pres-sale'),'Presidente','Entrega')}
+      ${firma(v('cd-pres-entra'),'Presidente','Recibe')}
+      ${firma(v('cd-tes-sale'),'Tesorero','Entrega')}
+      ${firma(v('cd-tes-entra'),'Tesorero','Recibe')}
+      ${firma(v('cd-sec-sale'),'Secretario','Entrega')}
+      ${firma(v('cd-sec-entra'),'Secretario','Recibe')}
+    </div>
+    <scr`+`ipt>setTimeout(function(){try{window.focus();}catch(e){}},200);</scr`+`ipt>
+  </body></html>`;
+
+  win.document.write(html);
+  win.document.close();
+};
 
 // ══════════════════════════════════════════════════════════════
 //  BANDEJA CENTRAL DE ALERTAS — avisos operativos para el admin.
@@ -15331,7 +15604,7 @@ window.finCategoriaPDF = function() {
 
 // IMPORTANTE: APP_VERSION debe coincidir con "version" en version.json y con
 // VERSION en sw.js. Bumpear las 3 juntas o el banner de update queda pegado.
-const APP_VERSION = '20260625-001';
+const APP_VERSION = '20260625-002';
 
 // Referencia al SW en espera (si existe), compartida entre ambas rutas de actualización
 window._pendingSW = null;
@@ -17213,6 +17486,7 @@ body.damas-theme .filter-tab-active { background:rgba(139,74,107,0.15); color:#5
     <div class="dp-nav" data-sec="reportes-fin" onclick="dpShow('reportes-fin')">📊 &nbsp;Reportes Financieros</div>
     <div class="dp-nav" data-sec="sec-informe" onclick="dpShow('sec-informe')">📜 &nbsp;Informe Secretario</div>
     <div class="dp-nav" data-sec="estadisticas" onclick="dpShow('estadisticas')">📋 &nbsp;Informe del Tesorero</div>
+    <div class="dp-nav" data-sec="cambio-directiva" onclick="dpShow('cambio-directiva')">🔄 &nbsp;Cambio de Directiva</div>
     <div style="padding:20px 20px 8px;margin-top:8px;font-size:9px;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:rgba(255,255,255,0.25);">Auditoría</div>
     <div class="dp-nav" data-sec="integridad" onclick="dpShow('integridad')" id="nav-integridad" style="display:none;">🛡️ &nbsp;Control de Integridad</div>
     <div class="dp-nav" data-sec="eventos-sensibles" onclick="dpShow('eventos-sensibles')" id="nav-eventos-sensibles" style="display:none;">⚠️ &nbsp;Eventos Sensibles</div>
@@ -18177,6 +18451,53 @@ body.damas-theme .filter-tab-active { background:rgba(139,74,107,0.15); color:#5
         </div>
         <div id="segaud-kpis"></div>
         <div id="segaud-body" style="min-height:200px;"><div style="text-align:center;padding:60px;color:#8A9BB0;">Cargando...</div></div>
+      </div>
+
+      <!-- CAMBIO DE DIRECTIVA (acta de entrega-recepción) -->
+      <style>
+        .cd-lbl{font-size:11px;font-weight:700;color:#5A6B7E;margin-bottom:3px;}
+        .cd-inp{width:100%;padding:8px 10px;border:1.5px solid #E8E0D4;border-radius:8px;font-family:'DM Sans',sans-serif;font-size:13px;color:#0D1B2A;outline:none;background:#fff;box-sizing:border-box;}
+        .cd-inp:focus{border-color:#C9973A;}
+      </style>
+      <div id="dp-sec-cambio-directiva" class="dp-section" style="display:none;">
+        <div style="display:flex;align-items:flex-end;justify-content:space-between;margin-bottom:18px;flex-wrap:wrap;gap:12px;">
+          <div>
+            <div style="font-family:'Playfair Display',serif;font-size:22px;font-weight:700;color:#0D1B2A;">🔄 Cambio de Directiva</div>
+            <div style="font-size:13px;color:#8A9BB0;margin-top:2px;">Situación financiera del club para el acta de entrega-recepción. Los números salen del sistema; el texto y anexos se capturan abajo.</div>
+          </div>
+          <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;">
+            <div><div style="font-size:10px;font-weight:700;color:#8A9BB0;text-transform:uppercase;letter-spacing:.5px;margin-bottom:3px;">Gestión desde</div><input type="date" id="cd-desde" onchange="cambioDirectivaLoad()" style="padding:7px 10px;border:1.5px solid #E8E0D4;border-radius:9px;font-family:'DM Sans',sans-serif;font-size:12px;color:#0D1B2A;outline:none;background:#fff;"></div>
+            <div><div style="font-size:10px;font-weight:700;color:#8A9BB0;text-transform:uppercase;letter-spacing:.5px;margin-bottom:3px;">hasta</div><input type="date" id="cd-hasta" onchange="cambioDirectivaLoad()" style="padding:7px 10px;border:1.5px solid #E8E0D4;border-radius:9px;font-family:'DM Sans',sans-serif;font-size:12px;color:#0D1B2A;outline:none;background:#fff;"></div>
+            <button onclick="cambioDirectivaLoad(true)" style="padding:8px 14px;background:#fff;color:#0D1B2A;border:1.5px solid #E8E0D4;border-radius:9px;font-family:'DM Sans',sans-serif;font-size:12px;font-weight:700;cursor:pointer;">🔄 Actualizar</button>
+            <button onclick="cambioDirectivaGenerarActa()" style="padding:8px 16px;background:linear-gradient(135deg,#E8B84B,#C9973A);color:#0D1B2A;border:none;border-radius:9px;font-family:'DM Sans',sans-serif;font-size:12px;font-weight:700;cursor:pointer;">📄 Generar Acta</button>
+          </div>
+        </div>
+        <div id="cd-body" style="min-height:200px;"><div style="text-align:center;padding:60px;color:#8A9BB0;">Calculando situación financiera...</div></div>
+
+        <!-- Datos del acta (texto manual) -->
+        <div style="background:#fff;border:1.5px solid #EDE8DF;border-radius:12px;padding:18px 20px;margin-top:18px;">
+          <div style="font-family:'Playfair Display',serif;font-size:15px;font-weight:700;color:#0D1B2A;margin-bottom:4px;">✍️ Datos del acta (se imprimen en el reporte)</div>
+          <div style="font-size:12px;color:#8A9BB0;margin-bottom:14px;">Opcional. Lo que dejes en blanco saldrá como línea para llenar a mano.</div>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;">
+            <div><div class="cd-lbl">Lugar</div><input type="text" id="cd-lugar" placeholder="Veracruz, Ver." class="cd-inp"></div>
+            <div><div class="cd-lbl">Fecha del acta</div><input type="date" id="cd-fecha-acta" class="cd-inp"></div>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:14px;">
+            <div>
+              <div style="font-size:11px;font-weight:700;color:#C0392B;text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px;">Directiva saliente (entrega)</div>
+              <div class="cd-lbl">Presidente</div><input type="text" id="cd-pres-sale" class="cd-inp">
+              <div class="cd-lbl" style="margin-top:8px;">Secretario</div><input type="text" id="cd-sec-sale" class="cd-inp">
+              <div class="cd-lbl" style="margin-top:8px;">Tesorero</div><input type="text" id="cd-tes-sale" class="cd-inp">
+            </div>
+            <div>
+              <div style="font-size:11px;font-weight:700;color:#1A7A4A;text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px;">Directiva entrante (recibe)</div>
+              <div class="cd-lbl">Presidente</div><input type="text" id="cd-pres-entra" class="cd-inp">
+              <div class="cd-lbl" style="margin-top:8px;">Secretario</div><input type="text" id="cd-sec-entra" class="cd-inp">
+              <div class="cd-lbl" style="margin-top:8px;">Tesorero</div><input type="text" id="cd-tes-entra" class="cd-inp">
+            </div>
+          </div>
+          <div style="margin-top:14px;"><div class="cd-lbl">Notas / anexos (texto libre, opcional)</div><textarea id="cd-notas" rows="3" placeholder="Documentación entregada, observaciones, pendientes que se capturan a mano..." class="cd-inp" style="resize:vertical;"></textarea></div>
+        </div>
       </div>
 
       <!-- BANDEJA CENTRAL DE ALERTAS (operativas) -->
