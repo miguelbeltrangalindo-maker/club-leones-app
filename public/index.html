@@ -6731,6 +6731,10 @@ async function cambioDirectivaCompute(startYear, force = false) {
   const frDepPeriodo = fondoRes.filter(m => (m.tipo === 'deposito' || m.tipo === 'saldo_inicial') && frEnRango(m.fecha)).reduce((s,m) => s + Number(m.monto || 0), 0);
   const frRetPeriodo = fondoRes.filter(m => m.tipo === 'retiro' && frEnRango(m.fecha)).reduce((s,m) => s + Number(m.monto || 0), 0);
   const saldoReservaFinal = saldoReservaInicial + frDepPeriodo - frRetPeriodo;
+  const frMovimientos = fondoRes
+    .filter(m => frEnRango(m.fecha) && (m.tipo === 'deposito' || m.tipo === 'saldo_inicial' || m.tipo === 'retiro'))
+    .map(m => ({ fecha: m.fecha || '', concepto: m.concepto || (m.tipo === 'retiro' ? 'Retiro' : 'Depósito'), salida: m.tipo === 'retiro', monto: Number(m.monto || 0) }))
+    .sort((a,b) => String(a.fecha).localeCompare(String(b.fecha)));
 
   // ── Mutualista (separado por nota fiscal) ──
   const mut = (typeof calcSaldoMutualista === 'function') ? calcSaldoMutualista(recibos, mutPagos, null) : { saldoTotal: 0 };
@@ -6796,7 +6800,7 @@ async function cambioDirectivaCompute(startYear, force = false) {
   return {
     startYear, desde, hasta, nextStart,
     saldoBanco, saldoCaja, disponible, saldoMutualista,
-    saldoReservaInicial, frDepPeriodo, frRetPeriodo, saldoReservaFinal,
+    saldoReservaInicial, frDepPeriodo, frRetPeriodo, saldoReservaFinal, frMovimientos,
     aging, cuentasPagar, totalPagar,
     ingItems, egrItems, totalIng, totalEgr, netoPeriodo: totalIng - totalEgr,
     eventos, totalEventos,
@@ -6840,10 +6844,14 @@ window.cambioDirectivaLoad = async function(force = false) {
 
   const dispCard = card('🏦 Disponibilidad del club', fila('Bancos (operativo)', d.saldoBanco) + fila('Caja (efectivo)', d.saldoCaja) + fila('Total disponible', d.disponible, '#1A7A4A', true));
 
+  const frDetalle = d.frMovimientos.length
+    ? d.frMovimientos.map(m => fila(`${m.fecha} · ${m.salida ? 'Salida' : 'Depósito'} — ${m.concepto}`, m.monto, m.salida ? '#C0392B' : '#1A7A4A')).join('')
+    : '<div style="font-size:12px;color:#8A9BB0;padding:6px 0;">Sin movimientos del fondo en el periodo.</div>';
   const reservaCard = card('🗂️ Fondo de Reserva (movimiento del periodo)',
-    fila('Saldo inicial del fondo', d.saldoReservaInicial) +
-    fila('Depósitos en el periodo (+)', d.frDepPeriodo, '#1A7A4A') +
-    fila('Salidas hacia el club en el periodo (−)', d.frRetPeriodo, '#C0392B') +
+    fila('Saldo inicial del fondo', d.saldoReservaInicial, '#0D1B2A', true) +
+    frDetalle +
+    fila('Total depósitos (+)', d.frDepPeriodo, '#1A7A4A') +
+    fila('Total salidas hacia el club (−)', d.frRetPeriodo, '#C0392B') +
     fila('Saldo final del fondo', d.saldoReservaFinal, '#0D1B2A', true));
 
   const mutCard = card('⚫ Fondo Mutualista', fila('Saldo del fondo', d.saldoMutualista, '#5A6B7E', true));
@@ -6946,11 +6954,13 @@ window.cambioDirectivaGenerarActa = async function() {
     <h2>1. Disponibilidad del club (a la fecha)</h2>
     ${tabla('Saldos en cuentas (banco + caja)', dispRows)}
     <h2>2. Fondo de Reserva (movimiento del periodo)</h2>
-    ${tabla('Movimiento del Fondo de Reserva en el periodo',
-      trMoney('Saldo inicial del fondo', d.saldoReservaInicial) +
-      trMoney('Depósitos en el periodo (+)', d.frDepPeriodo) +
-      trMoney('Salidas hacia el club en el periodo (−)', d.frRetPeriodo) +
-      trMoney('SALDO FINAL DEL FONDO', d.saldoReservaFinal, {tot:true}))}
+    <table><thead><tr><th>Fecha</th><th>Concepto</th><th class="num">Monto</th></tr></thead><tbody>
+      <tr><td colspan="2"><b>Saldo inicial del fondo</b></td><td class="num"><b>${fmt(d.saldoReservaInicial)}</b></td></tr>
+      ${d.frMovimientos.length ? d.frMovimientos.map(m => `<tr><td>${esc(m.fecha)}</td><td>${esc((m.salida ? 'Salida — ' : 'Depósito — ') + m.concepto)}</td><td class="num">${m.salida ? '−' : ''}${fmt(m.monto)}</td></tr>`).join('') : '<tr><td colspan="3" class="empty">Sin movimientos del fondo en el periodo.</td></tr>'}
+      <tr><td colspan="2">Total depósitos en el periodo (+)</td><td class="num">${fmt(d.frDepPeriodo)}</td></tr>
+      <tr><td colspan="2">Total salidas hacia el club (−)</td><td class="num">−${fmt(d.frRetPeriodo)}</td></tr>
+      <tr class="tot"><td colspan="2">SALDO FINAL DEL FONDO</td><td class="num">${fmt(d.saldoReservaFinal)}</td></tr>
+    </tbody></table>
     <h2>3. Fondo Mutualista</h2>
     ${tabla('Saldo del Fondo Mutualista', trMoney('Saldo del Fondo Mutualista', d.saldoMutualista, {tot:true}))}
     <h2>4. Cuentas por cobrar (adeudos de socios)</h2>
@@ -15657,7 +15667,7 @@ window.finCategoriaPDF = function() {
 
 // IMPORTANTE: APP_VERSION debe coincidir con "version" en version.json y con
 // VERSION en sw.js. Bumpear las 3 juntas o el banner de update queda pegado.
-const APP_VERSION = '20260625-004';
+const APP_VERSION = '20260625-005';
 
 // Referencia al SW en espera (si existe), compartida entre ambas rutas de actualización
 window._pendingSW = null;
