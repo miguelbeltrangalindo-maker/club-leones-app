@@ -6724,10 +6724,13 @@ async function cambioDirectivaCompute(startYear, force = false) {
   const saldoBanco = (cfgB.exists() ? Number(cfgB.data().monto || 0) : 0) + sumDest(esBanco,'ingreso') - sumDest(esBanco,'egreso');
   const saldoCaja  = (cfgC.exists() ? Number(cfgC.data().monto || 0) : 0) + sumDest(esCaja,'ingreso')  - sumDest(esCaja,'egreso');
 
-  // ── Fondo de Reserva (reportado por separado: es de un comité, no del club) ──
-  const frDep = fondoRes.filter(m => m.tipo === 'deposito' || m.tipo === 'saldo_inicial').reduce((s,m) => s + Number(m.monto || 0), 0);
-  const frRet = fondoRes.filter(m => m.tipo === 'retiro').reduce((s,m) => s + Number(m.monto || 0), 0);
-  const saldoReserva = frDep - frRet;
+  // ── Fondo de Reserva: saldo inicial del periodo, salidas hacia el club, saldo final ──
+  const frEnRango = f => f && String(f) >= desde && String(f) <= hasta;
+  const frSigno = m => (m.tipo === 'retiro' ? -1 : 1) * Number(m.monto || 0); // depósito/saldo_inicial suman, retiro resta
+  const saldoReservaInicial = fondoRes.filter(m => String(m.fecha || '') < desde).reduce((s,m) => s + frSigno(m), 0);
+  const frDepPeriodo = fondoRes.filter(m => (m.tipo === 'deposito' || m.tipo === 'saldo_inicial') && frEnRango(m.fecha)).reduce((s,m) => s + Number(m.monto || 0), 0);
+  const frRetPeriodo = fondoRes.filter(m => m.tipo === 'retiro' && frEnRango(m.fecha)).reduce((s,m) => s + Number(m.monto || 0), 0);
+  const saldoReservaFinal = saldoReservaInicial + frDepPeriodo - frRetPeriodo;
 
   // ── Mutualista (separado por nota fiscal) ──
   const mut = (typeof calcSaldoMutualista === 'function') ? calcSaldoMutualista(recibos, mutPagos, null) : { saldoTotal: 0 };
@@ -6792,7 +6795,8 @@ async function cambioDirectivaCompute(startYear, force = false) {
 
   return {
     startYear, desde, hasta, nextStart,
-    saldoBanco, saldoCaja, disponible, saldoReserva, saldoMutualista,
+    saldoBanco, saldoCaja, disponible, saldoMutualista,
+    saldoReservaInicial, frDepPeriodo, frRetPeriodo, saldoReservaFinal,
     aging, cuentasPagar, totalPagar,
     ingItems, egrItems, totalIng, totalEgr, netoPeriodo: totalIng - totalEgr,
     eventos, totalEventos,
@@ -6836,9 +6840,13 @@ window.cambioDirectivaLoad = async function(force = false) {
 
   const dispCard = card('🏦 Disponibilidad del club', fila('Bancos (operativo)', d.saldoBanco) + fila('Caja (efectivo)', d.saldoCaja) + fila('Total disponible', d.disponible, '#1A7A4A', true));
 
-  const reservaCard = card('🗂️ Fondo de Reserva', fila('Saldo del fondo', d.saldoReserva, '#5A6B7E', true) + `<div style="font-size:11px;color:#8A9BB0;margin-top:8px;font-style:italic;">Se reporta por separado: es administrado por un comité, no por el club. El club puede solicitar préstamos, pero no maneja ese dinero directamente.</div>`);
+  const reservaCard = card('🗂️ Fondo de Reserva (movimiento del periodo)',
+    fila('Saldo inicial del fondo', d.saldoReservaInicial) +
+    fila('Depósitos en el periodo (+)', d.frDepPeriodo, '#1A7A4A') +
+    fila('Salidas hacia el club en el periodo (−)', d.frRetPeriodo, '#C0392B') +
+    fila('Saldo final del fondo', d.saldoReservaFinal, '#0D1B2A', true));
 
-  const mutCard = card('⚫ Fondo Mutualista', fila('Saldo del fondo', d.saldoMutualista, '#5A6B7E', true) + `<div style="font-size:11px;color:#8A9BB0;margin-top:8px;font-style:italic;">Se reporta por separado: por observación fiscal, el dinero de la mutualista no se mezcla con las cuentas del club.</div>`);
+  const mutCard = card('⚫ Fondo Mutualista', fila('Saldo del fondo', d.saldoMutualista, '#5A6B7E', true));
 
   const cobrarCard = card('🟢 Cuentas por cobrar (socios)',
     fila('0–30 días', d.aging.b0_30, '#1A7A4A') + fila('31–60 días', d.aging.b31_60, '#C9973A') + fila('61–90 días', d.aging.b61_90, '#E67E22') + fila('90+ días', d.aging.b90_mas, '#C0392B') + fila(`Total por cobrar · ${d.aging.nSocios} socio${d.aging.nSocios!==1?'s':''}`, d.porCobrar, '#0D1B2A', true));
@@ -6937,12 +6945,14 @@ window.cambioDirectivaGenerarActa = async function() {
 
     <h2>1. Disponibilidad del club (a la fecha)</h2>
     ${tabla('Saldos en cuentas (banco + caja)', dispRows)}
-    <h2>2. Fondo de Reserva</h2>
-    ${tabla('Saldo del Fondo de Reserva', trMoney('Saldo del Fondo de Reserva', d.saldoReserva, {tot:true}))}
-    <p class="nota">El Fondo de Reserva es administrado por un comité, no por el club. Se reporta por separado y no forma parte del patrimonio del club; el club puede solicitar préstamos pero no maneja ese dinero directamente.</p>
+    <h2>2. Fondo de Reserva (movimiento del periodo)</h2>
+    ${tabla('Movimiento del Fondo de Reserva en el periodo',
+      trMoney('Saldo inicial del fondo', d.saldoReservaInicial) +
+      trMoney('Depósitos en el periodo (+)', d.frDepPeriodo) +
+      trMoney('Salidas hacia el club en el periodo (−)', d.frRetPeriodo) +
+      trMoney('SALDO FINAL DEL FONDO', d.saldoReservaFinal, {tot:true}))}
     <h2>3. Fondo Mutualista</h2>
     ${tabla('Saldo del Fondo Mutualista', trMoney('Saldo del Fondo Mutualista', d.saldoMutualista, {tot:true}))}
-    <p class="nota">Por observación fiscal, el Fondo Mutualista se reporta por separado y no se mezcla con las cuentas del club.</p>
     <h2>4. Cuentas por cobrar (adeudos de socios)</h2>
     ${tabla('Cartera por antigüedad', cobrarRows)}
     <h2>5. Cuentas por pagar (acreedores)</h2>
@@ -15647,7 +15657,7 @@ window.finCategoriaPDF = function() {
 
 // IMPORTANTE: APP_VERSION debe coincidir con "version" en version.json y con
 // VERSION en sw.js. Bumpear las 3 juntas o el banner de update queda pegado.
-const APP_VERSION = '20260625-003';
+const APP_VERSION = '20260625-004';
 
 // Referencia al SW en espera (si existe), compartida entre ambas rutas de actualización
 window._pendingSW = null;
