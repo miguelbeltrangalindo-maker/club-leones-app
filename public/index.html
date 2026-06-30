@@ -3326,7 +3326,7 @@ function _renderMisRecibos(recs) {
   const ultCondonado = (ult.estado||'').toLowerCase() === 'condonado';
   const ultBadgeBg = pagado ? 'rgba(26,122,74,0.1)' : ultParcial ? 'rgba(142,68,173,0.12)' : ultCondonado ? 'rgba(138,155,176,0.14)' : 'rgba(230,126,34,0.12)';
   const ultBadgeColor = pagado ? '#1A7A4A' : ultParcial ? '#8E44AD' : ultCondonado ? '#8A9BB0' : '#E67E22';
-  const ultBadgeLabel = pagado ? '✅ Pagado' : ultParcial ? '🟣 Parcial' : ultCondonado ? '🚫 Condonado' : '⏳ Pendiente';
+  const ultBadgeLabel = pagado ? (ult.pagoAdelantado ? '✅ Pagado por adelantado' : '✅ Pagado') : ultParcial ? '🟣 Parcial' : ultCondonado ? '🚫 Condonado' : '⏳ Pendiente';
   const conceptos = [
     {l:'① Cuota mensual',v:ult.c1},{l:'② Internacionales',v:ult.c2},{l:'③ Percápita',v:ult.c3},
     {l:'④ Baile de Coronación',v:ult.c4},{l:'⑤ Navidad Escuela Club',v:ult.c5},
@@ -3365,7 +3365,7 @@ function _renderMisRecibos(recs) {
         const cd=(r.estado||'').toLowerCase()==='condonado';
         const bg=pg?'rgba(26,122,74,0.1)':pc?'rgba(142,68,173,0.12)':cd?'rgba(138,155,176,0.14)':'rgba(230,126,34,0.12)';
         const cl=pg?'#1A7A4A':pc?'#8E44AD':cd?'#8A9BB0':'#E67E22';
-        const lb=pg?'✅ Pagado':pc?'🟣 Parcial':cd?'🚫 Condonado':'⏳ Pendiente';
+        const lb=pg?(r.pagoAdelantado?'✅ Adelantado':'✅ Pagado'):pc?'🟣 Parcial':cd?'🚫 Condonado':'⏳ Pendiente';
         const sub=pc?`${fmt(r.total)} · abonado ${fmt(r.montoPagado||0)}`:fmt(r.total);
         return `<div onclick="miReciboVer('${r.id}')" style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;cursor:pointer;${i<recs.length-1?'border-bottom:1px solid #F5F0E8;':''}"><div><div style="font-size:13px;font-weight:600;color:#0D1B2A;">${r.mes||'—'} ${r.anio||''}</div><div style="font-size:11px;color:#8A9BB0;">${sub}</div></div><div style="display:flex;align-items:center;gap:6px;"><div style="padding:4px 12px;border-radius:50px;font-size:11px;font-weight:700;background:${bg};color:${cl};">${lb}</div><div style="color:#C9973A;font-size:14px;">›</div></div></div>`;
       }).join('')}
@@ -10282,6 +10282,146 @@ const LOTE_FIELDS = [
 ];
 
 window._loteTarifas = null;
+// ════════════════════════════════════════════════════════════════
+//  PAGO ADELANTADO — pre-paga recibos por semestre o año.
+//  Crea/marca como pagados los recibos mensuales del periodo. El lote
+//  mensual salta a los socios que ya tienen ese mes (no duplica). Al
+//  agotarse los meses adelantados, el socio vuelve a los lotes.
+// ════════════════════════════════════════════════════════════════
+function rbAdelantadoMeses(periodo, anio) {
+  const sem1 = ['Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+  const sem2 = ['Enero','Febrero','Marzo','Abril','Mayo','Junio'];
+  if (periodo === 'sem1') return sem1.map(m => ({ mes:m, anio }));
+  if (periodo === 'sem2') return sem2.map(m => ({ mes:m, anio }));
+  return [...sem1.map(m => ({ mes:m, anio })), ...sem2.map(m => ({ mes:m, anio: anio+1 }))];
+}
+window.rbAdelantadoAbrir = function() {
+  const sel = document.getElementById('rb-adel-socio');
+  const socios = (window.allMembers||[]).filter(m => (m.tipo==='socio'||m.tipo==='viuda') && m.estado!=='baja' && m.rol!=='pendiente')
+    .sort((a,b) => ((a.apellido||'')+(a.nombre||'')).localeCompare((b.apellido||'')+(b.nombre||''),'es'));
+  sel.innerHTML = '<option value="">— Elige socio —</option>' + socios.map(m => `<option value="${esc(m.uid)}">${esc((m.apellido||'')+', '+(m.nombre||''))}${m.numeroSocio?' (#'+esc(m.numeroSocio)+')':''}</option>`).join('');
+  const now = new Date();
+  const startYear = now.getMonth() >= 6 ? now.getFullYear() : now.getFullYear()-1;
+  document.getElementById('rb-adel-anio').value = startYear;
+  document.getElementById('rb-adel-periodo').value = 'sem1';
+  document.getElementById('rb-adel-destino').value = 'banco';
+  document.getElementById('rb-adel-fecha').value = now.toISOString().slice(0,10);
+  document.getElementById('rb-adel-existente').style.display = 'none';
+  document.getElementById('rb-modal-adelantado').style.display = 'flex';
+  rbAdelantadoPreview();
+};
+window.rbAdelantadoCerrar = function() { document.getElementById('rb-modal-adelantado').style.display = 'none'; };
+async function rbAdelantadoCalc() {
+  const uid = document.getElementById('rb-adel-socio')?.value || '';
+  const periodo = document.getElementById('rb-adel-periodo')?.value || 'sem1';
+  const anio = parseInt(document.getElementById('rb-adel-anio')?.value) || 0;
+  if (!uid || !anio) return null;
+  const m = (window.allMembers||[]).find(x => x.uid === uid);
+  if (!m) return null;
+  const meses = rbAdelantadoMeses(periodo, anio);
+  const anios = [...new Set(meses.map(x => x.anio))];
+  const tarifas = {};
+  await Promise.all(anios.map(async y => { tarifas[y] = await cuotasGetTarifas(y); }));
+  const esViuda = m.tipo === 'viuda';
+  const items = meses.map(x => {
+    const t = tarifas[x.anio] || {};
+    const c1=esViuda?0:Number(t.c1||0), c2=esViuda?0:Number(t.c2||0), c3=esViuda?0:Number(t.c3||0),
+          c4=esViuda?0:Number(t.c4||0), c5=esViuda?0:Number(t.c5||0), c6=Number(t.c6||0), c7=esViuda?0:Number(t.c7||0);
+    const tarifaTotal = esViuda ? c6 : (c1+c2+c3+c4+c5+c6+c7);
+    const existente = (window.allRecibos||[]).find(r => r.socioUID === uid && r.mes === x.mes && r.anio === x.anio);
+    const cobro = existente ? Number(existente.total || tarifaTotal) : tarifaTotal;
+    return { mes:x.mes, anio:x.anio, c1,c2,c3,c4,c5,c6, c6label:t.c6label||'', c7, c7label:t.c7label||'', total: cobro, existente };
+  });
+  const totalGeneral = items.reduce((s,i) => s + i.total, 0);
+  return { m, esViuda, items, totalGeneral };
+}
+window.rbAdelantadoPreview = async function() {
+  const cont = document.getElementById('rb-adel-preview');
+  const uid = document.getElementById('rb-adel-socio')?.value || '';
+  const exDiv = document.getElementById('rb-adel-existente');
+  if (uid) {
+    const ya = (window.allRecibos||[]).filter(r => r.socioUID===uid && r.pagoAdelantado && (r.estado||'').toLowerCase()==='pagado');
+    const grupos = [...new Set(ya.map(r => r.pagoAdelantadoGrupo).filter(Boolean))];
+    if (ya.length && grupos.length) {
+      exDiv.style.display = 'block';
+      exDiv.innerHTML = `⚠️ Este socio ya tiene <b>${ya.length}</b> mes(es) pagados por adelantado. <button onclick="rbAdelantadoRevertir('${esc(grupos[0])}')" style="margin-left:6px;padding:4px 10px;background:#fff;color:#C0392B;border:1.5px solid #C0392B;border-radius:7px;font-size:11px;font-weight:700;cursor:pointer;">↺ Revertir el adelantado existente</button>`;
+    } else { exDiv.style.display = 'none'; }
+  } else { exDiv.style.display = 'none'; }
+  if (!uid) { cont.innerHTML = '<div style="font-size:12px;color:#8A9BB0;">Elige un socio para ver la vista previa.</div>'; return; }
+  cont.innerHTML = '<div style="font-size:12px;color:#8A9BB0;">Calculando...</div>';
+  const data = await rbAdelantadoCalc();
+  if (!data) { cont.innerHTML = '<div style="font-size:12px;color:#C0392B;">No se pudo calcular (¿hay tarifas configuradas para ese año?).</div>'; return; }
+  const nuevos = data.items.filter(i => !i.existente).length;
+  const marcar = data.items.filter(i => i.existente).length;
+  cont.innerHTML = `
+    <div style="font-size:11px;color:#8A9BB0;margin-bottom:6px;">${data.esViuda?'Viuda — solo cuota mutualista':'Cuotas según tarifa'} · ${data.items.length} meses</div>
+    ${data.items.map(i => `<div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid #F0EBE0;font-size:12.5px;"><span style="color:#5A6B7E;">${esc(i.mes)} ${i.anio}${i.existente?' <span style="color:#C9973A;font-size:10px;">(ya existe → se marca pagado)</span>':''}</span><span style="font-weight:700;color:#0D1B2A;">${fmtMXN(i.total)}</span></div>`).join('')}
+    <div style="display:flex;justify-content:space-between;padding:8px 0 0;font-weight:800;font-size:14px;"><span>Total a cobrar</span><span style="color:#1A7A4A;">${fmtMXN(data.totalGeneral)}</span></div>
+    <div style="font-size:11px;color:#8A9BB0;margin-top:6px;">${nuevos} recibo(s) nuevo(s) · ${marcar} existente(s) se marcarán pagados</div>`;
+};
+window.rbAdelantadoGuardar = async function() {
+  const btn = document.getElementById('rb-adel-btn');
+  const uid = document.getElementById('rb-adel-socio')?.value || '';
+  if (!uid) { dpShowToast('Elige un socio','error'); return; }
+  const destino = document.getElementById('rb-adel-destino')?.value || 'banco';
+  const fecha = document.getElementById('rb-adel-fecha')?.value || new Date().toISOString().slice(0,10);
+  const periodo = document.getElementById('rb-adel-periodo')?.value || 'sem1';
+  btn.disabled = true; btn.textContent = '⏳ Procesando...';
+  try {
+    const data = await rbAdelantadoCalc();
+    if (!data || !data.items.length) { dpShowToast('Nada que cobrar','error'); return; }
+    const m = data.m;
+    const grupoId = 'adel_' + uid + '_' + Date.now();
+    const periodoLbl = periodo==='sem1' ? 'Semestre Jul-Dic' : periodo==='sem2' ? 'Semestre Ene-Jun' : 'Anual Jul-Jun';
+    const concepto = `Cuotas adelantadas (${periodoLbl}) — ${(m.nombre||'')+' '+(m.apellido||'')}`.trim();
+    let movId = null;
+    try { movId = await finAutoMovimiento('ingreso', 'Cuotas de Socios', concepto, data.totalGeneral, fecha, 'recibo', destino, { pagoAdelantadoGrupo: grupoId }); } catch(e) { console.error('mov adelantado:', e); }
+    const base = { pagoAdelantado:true, pagoAdelantadoGrupo:grupoId, pagoAdelantadoPeriodo:periodo, estado:'pagado', fechaPago:fecha, movimientoDestino:destino, modificado:new Date().toISOString() };
+    for (const i of data.items) {
+      if (i.existente) {
+        await updateDoc(doc(db,'recibos',i.existente.id), { ...base, montoPagado: Number(i.existente.total || i.total), pagoAdelantadoCreado:false });
+      } else {
+        await addDoc(collection(db,'recibos'), {
+          socioUID:uid, nombreSocio:(m.nombre||'')+' '+(m.apellido||''), apellidoSocio:m.apellido||'', numeroSocio:m.numeroSocio||'', subtipo:m.tipo||'socio',
+          mes:i.mes, anio:i.anio, c1:i.c1,c2:i.c2,c3:i.c3,c4:i.c4,c5:i.c5,c6:i.c6,c6label:i.c6label,c7:i.c7,c7label:i.c7label,
+          descuento:0, descuentoLabel:'', notas:'', loteNota:'Pago adelantado ('+periodoLbl+')', total:i.total,
+          ...base, montoPagado:i.total, pagoAdelantadoCreado:true, movimientoFinId:null,
+          autorUID:window.currentUser?.uid||'', autorNombre:(window.currentUser?.nombre||'')+' '+(window.currentUser?.apellido||''), creado:new Date().toISOString(),
+        });
+      }
+    }
+    await logAuditoria('pago_adelantado', { socio:(m.nombre||'')+' '+(m.apellido||''), uid, periodo, total:data.totalGeneral, meses:data.items.length, grupoId });
+    dpShowToast(`✅ ${data.items.length} recibos cobrados por adelantado · ${fmtMXN(data.totalGeneral)}`,'success');
+    rbAdelantadoCerrar();
+    await rbLoad();
+  } catch(e) {
+    console.error('rbAdelantadoGuardar:', e);
+    dpShowToast('Error: '+e.message,'error');
+  } finally { btn.disabled = false; btn.textContent = '💳 Cobrar adelantado'; }
+};
+window.rbAdelantadoRevertir = async function(grupoId) {
+  if (!grupoId) return;
+  if (!confirm('¿Revertir este pago adelantado completo?\n\nLos recibos creados por el adelantado se eliminarán, los que ya existían volverán a "pendiente", y el ingreso registrado se borrará.')) return;
+  try {
+    const grupo = (window.allRecibos||[]).filter(r => r.pagoAdelantadoGrupo === grupoId);
+    for (const r of grupo) {
+      if (r.pagoAdelantadoCreado) {
+        await deleteDoc(doc(db,'recibos',r.id));
+      } else {
+        await updateDoc(doc(db,'recibos',r.id), { estado:'pendiente', montoPagado:0, fechaPago:null, pagoAdelantado:false, pagoAdelantadoGrupo:null, pagoAdelantadoPeriodo:null, pagoAdelantadoCreado:null, movimientoDestino:null, modificado:new Date().toISOString() });
+      }
+    }
+    try {
+      const movSnap = await getDocs(query(collection(db,'movimientos_financieros'), where('pagoAdelantadoGrupo','==',grupoId)));
+      for (const md of movSnap.docs) await deleteDoc(doc(db,'movimientos_financieros',md.id));
+    } catch(e) { console.error('revert mov:', e); }
+    await logAuditoria('revertir_pago_adelantado', { grupoId, recibos:grupo.length });
+    dpShowToast('Pago adelantado revertido','success');
+    rbAdelantadoCerrar();
+    await rbLoad();
+  } catch(e) { console.error('rbAdelantadoRevertir:', e); dpShowToast('Error al revertir: '+e.message,'error'); }
+};
+
 window.rbOpenLote = function() {
   const now=new Date();
   const meses=['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
@@ -10413,10 +10553,12 @@ window.loteGenerar=async function(){
   const btn=document.getElementById('lote-btn-generar');
   btn.textContent='Generando...';btn.disabled=true;
   try {
-    let creados=0;
+    let creados=0, saltados=0;
     for(const[uid,pid]of asignaciones){
       const p=window.lotePlantillas.find(x=>x.id===pid);if(!p)continue;
       const m=(window.allMembers||[]).find(x=>x.uid===uid);if(!m)continue;
+      // Saltar si el socio YA tiene recibo de este mes+año (ej. pago adelantado) — evita duplicar/crear deuda
+      if((window.allRecibos||[]).some(r=>r.socioUID===uid&&r.mes===mes&&r.anio===anio)){saltados++;continue;}
       const subtotalLote=LOTE_FIELDS.reduce((s,f)=>s+(parseFloat(p[f.key])||0),0);
       const totalLote=Math.max(0,subtotalLote-(parseFloat(p.descuento)||0));
       // Para viudas, sólo se cobra mutualista (c6); el resto se fuerza a 0 aunque la plantilla los traiga.
@@ -10434,8 +10576,8 @@ window.loteGenerar=async function(){
       await addDoc(collection(db,'recibos'),{socioUID:uid,nombreSocio:m.nombre+' '+m.apellido,apellidoSocio:m.apellido||'',numeroSocio:m.numeroSocio||'',subtipo:m.tipo||'socio',mes,anio,c1:c1v,c2:c2v,c3:c3v,c4:c4v,c5:c5v,c6:p.c6||0,c6label:p.c6label||'',c7:c7v,c7label:c7lblv,descuento:descv,descuentoLabel:descLblv,notas:'',loteNota:p.nota||'',total:totalV,estado:'pendiente',plantilla:p.nombre,autorUID:window.currentUser?.uid||'',autorNombre:(window.currentUser?.nombre||'')+' '+(window.currentUser?.apellido||''),creado:new Date().toISOString(),modificado:new Date().toISOString()});
       creados++;
     }
-    await logAuditoria('generar_lote_recibos', { mes, anio, cantidad: creados });
-    dpShowToast(`✅ ${creados} recibo${creados!==1?'s':''} generados para ${mes} ${anio}`,'success');
+    await logAuditoria('generar_lote_recibos', { mes, anio, cantidad: creados, saltados });
+    dpShowToast(`✅ ${creados} recibo${creados!==1?'s':''} generados para ${mes} ${anio}${saltados?` · ${saltados} ya tenían recibo (saltados)`:''}`,'success');
     rbCloseLote();await rbLoad();
   } catch(e){dpShowToast('Error: '+e.message,'error');}
   finally{btn.textContent='Generar recibos →';btn.disabled=false;}
@@ -16185,7 +16327,7 @@ window.finCategoriaPDF = function() {
 
 // IMPORTANTE: APP_VERSION debe coincidir con "version" en version.json y con
 // VERSION en sw.js. Bumpear las 3 juntas o el banner de update queda pegado.
-const APP_VERSION = '20260630-004';
+const APP_VERSION = '20260630-005';
 
 // Referencia al SW en espera (si existe), compartida entre ambas rutas de actualización
 window._pendingSW = null;
@@ -19377,6 +19519,7 @@ body.damas-theme .filter-tab-active { background:rgba(139,74,107,0.15); color:#5
           <div style="display:flex;gap:10px;">
             <button onclick="rbImprimirLote()" style="padding:9px 18px;background:#fff;color:#0D1B2A;border:2px solid #E8E0D4;border-radius:10px;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;cursor:pointer;">🖨 Imprimir Lista</button>
             <button onclick="rbOpenLote()" style="padding:9px 18px;background:#fff;color:#0D1B2A;border:2px solid #E8E0D4;border-radius:10px;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;cursor:pointer;">📋 Recibos en Lote</button>
+            <button onclick="rbAdelantadoAbrir()" style="padding:9px 18px;background:#0D1B2A;color:#E8B84B;border:none;border-radius:10px;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;cursor:pointer;">💳 Pago adelantado</button>
             <button onclick="rbOpenNuevo()" style="padding:9px 18px;background:linear-gradient(135deg,#E8B84B,#C9973A);color:#0D1B2A;border:none;border-radius:10px;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;cursor:pointer;">➕ Nuevo Recibo</button>
           </div>
         </div>
@@ -19978,6 +20121,35 @@ body.damas-theme .filter-tab-active { background:rgba(139,74,107,0.15); color:#5
 </div>
 
 <!-- MODAL LOTE -->
+<!-- ════ MODAL: PAGO ADELANTADO (semestre/anual) ════ -->
+<div id="rb-modal-adelantado" style="display:none;position:fixed;inset:0;background:rgba(13,27,42,0.7);backdrop-filter:blur(4px);z-index:9300;align-items:center;justify-content:center;padding:24px;overflow-y:auto;" onclick="if(event.target===this)rbAdelantadoCerrar()">
+  <div style="background:#fff;border-radius:18px;width:100%;max-width:540px;box-shadow:0 24px 80px rgba(13,27,42,0.35);padding:24px 28px;max-height:90vh;overflow-y:auto;">
+    <div style="font-family:'Playfair Display',serif;font-size:20px;font-weight:700;color:#0D1B2A;margin-bottom:4px;">💳 Pago adelantado</div>
+    <div style="font-size:12px;color:#8A9BB0;margin-bottom:16px;">Cobra por adelantado un semestre o año. Los recibos quedan pagados mes a mes; el lote mensual los saltará automáticamente.</div>
+    <div id="rb-adel-existente" style="display:none;font-size:12px;color:#C0392B;background:rgba(192,57,43,0.06);border-radius:9px;padding:10px 12px;margin-bottom:12px;"></div>
+    <div style="margin-bottom:12px;"><div class="cd-lbl">Socio</div><select id="rb-adel-socio" onchange="rbAdelantadoPreview()" class="cd-inp"></select></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px;">
+      <div><div class="cd-lbl">Periodo</div><select id="rb-adel-periodo" onchange="rbAdelantadoPreview()" class="cd-inp">
+        <option value="sem1">Semestre · Jul a Dic</option>
+        <option value="sem2">Semestre · Ene a Jun</option>
+        <option value="anual">Anual · Jul a Jun</option>
+      </select></div>
+      <div><div class="cd-lbl">Año (inicio)</div><select id="rb-adel-anio" onchange="rbAdelantadoPreview()" class="cd-inp">
+        <option>2024</option><option>2025</option><option>2026</option><option>2027</option><option>2028</option>
+      </select></div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px;">
+      <div><div class="cd-lbl">Destino del pago</div><select id="rb-adel-destino" class="cd-inp"><option value="banco">🏛️ Banco</option><option value="caja">💵 Caja</option></select></div>
+      <div><div class="cd-lbl">Fecha de pago</div><input type="date" id="rb-adel-fecha" class="cd-inp"></div>
+    </div>
+    <div style="background:#F8F6F1;border-radius:10px;padding:12px 14px;margin-bottom:18px;"><div style="font-size:11px;font-weight:700;color:#8A9BB0;text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px;">Vista previa</div><div id="rb-adel-preview"></div></div>
+    <div style="display:flex;justify-content:flex-end;gap:10px;">
+      <button onclick="rbAdelantadoCerrar()" style="padding:10px 20px;background:#F5F0E8;color:#0D1B2A;border:none;border-radius:10px;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;cursor:pointer;">Cancelar</button>
+      <button id="rb-adel-btn" onclick="rbAdelantadoGuardar()" style="padding:10px 22px;background:linear-gradient(135deg,#E8B84B,#C9973A);color:#0D1B2A;border:none;border-radius:10px;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;cursor:pointer;">💳 Cobrar adelantado</button>
+    </div>
+  </div>
+</div>
+
 <div id="rb-modal-lote" style="display:none;position:fixed;inset:0;background:rgba(13,27,42,0.65);backdrop-filter:blur(4px);z-index:9200;align-items:flex-start;justify-content:center;padding:24px;overflow-y:auto;">
   <div style="background:#fff;border-radius:20px;width:100%;max-width:960px;margin:auto;box-shadow:0 24px 80px rgba(13,27,42,0.3);">
     <div style="padding:20px 28px;border-bottom:1px solid #F0EBE0;display:flex;align-items:center;justify-content:space-between;">
