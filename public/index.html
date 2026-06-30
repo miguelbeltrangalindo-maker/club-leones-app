@@ -9383,6 +9383,21 @@ function estRenderPorSocio(recibos){
 }
 
 const CONCEPTO_KEYS=[{key:'c1',label:'Cuota Socio'},{key:'c2',label:'Cuota Dama'},{key:'c3',label:'Percápita'},{key:'c4',label:'Baile de Coronación'},{key:'c5',label:'Navidad Escuela Club'},{key:'c6',label:'Mutualista'},{key:'c7',label:'Concepto extra'}];
+// Tabla de desglose de los conceptos con nombre propio (c6 Mutualista / c7 Extra) por su etiqueta
+function _estExtrasTablaHTML(map){
+  const arr=Object.entries(map||{}).sort((a,b)=>b[1]-a[1]);
+  if(!arr.length)return '';
+  const tot=arr.reduce((s,[,v])=>s+v,0);
+  return `<div style="margin-top:18px;">
+    <div style="font-size:13px;font-weight:700;color:#0D1B2A;margin-bottom:8px;">📋 Desglose de Mutualista y Conceptos Extra (por nombre)</div>
+    <table style="width:100%;border-collapse:collapse;">
+      <thead><tr><th style="text-align:left;padding:8px 12px;background:#0D1B2A;color:#E8B84B;font-size:10px;text-transform:uppercase;letter-spacing:.5px;">Concepto (nombre dado)</th><th style="text-align:right;padding:8px 12px;background:#0D1B2A;color:#E8B84B;font-size:10px;text-transform:uppercase;letter-spacing:.5px;">Cobrado</th></tr></thead>
+      <tbody>${arr.map(([n,v])=>`<tr style="border-bottom:1px solid #EDE8DF;"><td style="padding:8px 12px;color:#0D1B2A;">${esc(n)}</td><td style="padding:8px 12px;text-align:right;font-weight:700;font-family:Georgia,serif;">${fmtMXN(v)}</td></tr>`).join('')}
+      <tr style="background:#F9F5EF;"><td style="padding:9px 12px;font-weight:700;">Total</td><td style="padding:9px 12px;text-align:right;font-weight:800;font-family:Georgia,serif;">${fmtMXN(tot)}</td></tr></tbody>
+    </table>
+    <div style="font-size:10.5px;color:#8A9BB0;margin-top:6px;font-style:italic;">Agrupa el concepto Mutualista (⑥) y el Concepto Extra (⑦) por el nombre dado en cada recibo. Solo recibos pagados. (Se incluye según los conceptos seleccionados arriba.)</div>
+  </div>`;
+}
 window.estFiltrarConceptos=function(){
   const recibos=window._estRecibos||[];
   const seleccionados=[...document.querySelectorAll('#est-conc-checks input:checked')].map(i=>i.value);
@@ -9397,12 +9412,17 @@ window.estFiltrarConceptos=function(){
   const porMes={};
   filtrados.forEach(r=>{const k=`${r.anio}-${String(MESES_ORD.indexOf(r.mes)+1).padStart(2,'0')}`;if(!porMes[k])porMes[k]={label:`${r.mes} ${r.anio}`,totales:{}};seleccionados.forEach(c=>{porMes[k].totales[c]=(porMes[k].totales[c]||0)+(r[c]||0);});});
   const mesesArr=Object.entries(porMes).sort(([a],[b])=>a.localeCompare(b)).map(([,v])=>v);
-  window._estConceptosData={mesesArr,seleccionados,mesIni,mesFin,anio};
+  const extrasPorNombre={};
+  filtrados.forEach(r=>{
+    if(seleccionados.includes('c6')&&Number(r.c6||0)>0){const k=(r.c6label||'').trim()||'Mutualista';extrasPorNombre[k]=(extrasPorNombre[k]||0)+Number(r.c6||0);}
+    if(seleccionados.includes('c7')&&Number(r.c7||0)>0){const k=(r.c7label||'').trim()||'Concepto Extra';extrasPorNombre[k]=(extrasPorNombre[k]||0)+Number(r.c7||0);}
+  });
+  window._estConceptosData={mesesArr,seleccionados,mesIni,mesFin,anio,extrasPorNombre};
   if(!mesesArr.length){document.getElementById('est-conceptos-result').innerHTML='<div style="text-align:center;padding:30px;color:#8A9BB0;">Sin recibos pagados en ese período</div>';return;}
   const totalesG={};seleccionados.forEach(c=>{totalesG[c]=mesesArr.reduce((s,m)=>s+(m.totales[c]||0),0);});
   const granTotal=Object.values(totalesG).reduce((s,v)=>s+v,0);
   const colores={c1:'#C9973A',c2:'#9B59B6',c3:'#2980B9',c4:'#E67E22',c5:'#1A7A4A',c6:'#C0392B',c7:'#16A085'};
-  document.getElementById('est-conceptos-result').innerHTML=`<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px;">${seleccionados.map(c=>{const lbl=CONCEPTO_KEYS.find(x=>x.key===c)?.label||c;const pct=granTotal?Math.round(totalesG[c]/granTotal*100):0;return`<div style="flex:1;min-width:110px;background:#F9F5EF;border-radius:10px;padding:10px 12px;border-top:3px solid ${colores[c]||'#8A9BB0'};"><div style="font-size:9px;font-weight:700;color:${colores[c]||'#8A9BB0'};text-transform:uppercase;letter-spacing:.5px;margin-bottom:3px;">${lbl}</div><div style="font-family:'Playfair Display',serif;font-size:15px;font-weight:700;color:#0D1B2A;">${fmtMXN(totalesG[c])}</div><div style="font-size:10px;color:#8A9BB0;">${pct}%</div></div>`;}).join('')}<div style="flex:1;min-width:110px;background:linear-gradient(135deg,#0D1B2A,#1A2E42);border-radius:10px;padding:10px 12px;border-top:3px solid #E8B84B;"><div style="font-size:9px;font-weight:700;color:rgba(255,255,255,0.5);text-transform:uppercase;letter-spacing:.5px;margin-bottom:3px;">TOTAL</div><div style="font-family:'Playfair Display',serif;font-size:15px;font-weight:700;color:#E8B84B;">${fmtMXN(granTotal)}</div><div style="font-size:10px;color:rgba(255,255,255,0.4);">${mesesArr.length} mes${mesesArr.length!==1?'es':''}</div></div></div><div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;"><thead><tr><th class="dp-th">Mes</th>${seleccionados.map(c=>`<th class="dp-th" style="text-align:right;color:${colores[c]||'#8A9BB0'};">${CONCEPTO_KEYS.find(x=>x.key===c)?.label||c}</th>`).join('')}<th class="dp-th" style="text-align:right;">Total</th></tr></thead><tbody>${mesesArr.map(m=>{const tot=seleccionados.reduce((s,c)=>s+(m.totales[c]||0),0);return`<tr style="border-bottom:1px solid #F5F0E8;"><td style="padding:9px 14px;font-weight:600;color:#0D1B2A;">${m.label}</td>${seleccionados.map(c=>`<td style="padding:9px 14px;text-align:right;font-size:12px;">${fmtMXN(m.totales[c]||0)}</td>`).join('')}<td style="padding:9px 14px;text-align:right;font-family:'Playfair Display',serif;font-size:13px;font-weight:700;">${fmtMXN(tot)}</td></tr>`;}).join('')}<tr style="background:#F9F5EF;"><td style="padding:10px 14px;font-weight:700;">TOTAL</td>${seleccionados.map(c=>`<td style="padding:10px 14px;text-align:right;font-family:'Playfair Display',serif;font-size:13px;font-weight:700;color:${colores[c]||'#0D1B2A'};">${fmtMXN(totalesG[c])}</td>`).join('')}<td style="padding:10px 14px;text-align:right;font-family:'Playfair Display',serif;font-size:14px;font-weight:900;">${fmtMXN(granTotal)}</td></tr></tbody></table></div>`;
+  document.getElementById('est-conceptos-result').innerHTML=`<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px;">${seleccionados.map(c=>{const lbl=CONCEPTO_KEYS.find(x=>x.key===c)?.label||c;const pct=granTotal?Math.round(totalesG[c]/granTotal*100):0;return`<div style="flex:1;min-width:110px;background:#F9F5EF;border-radius:10px;padding:10px 12px;border-top:3px solid ${colores[c]||'#8A9BB0'};"><div style="font-size:9px;font-weight:700;color:${colores[c]||'#8A9BB0'};text-transform:uppercase;letter-spacing:.5px;margin-bottom:3px;">${lbl}</div><div style="font-family:'Playfair Display',serif;font-size:15px;font-weight:700;color:#0D1B2A;">${fmtMXN(totalesG[c])}</div><div style="font-size:10px;color:#8A9BB0;">${pct}%</div></div>`;}).join('')}<div style="flex:1;min-width:110px;background:linear-gradient(135deg,#0D1B2A,#1A2E42);border-radius:10px;padding:10px 12px;border-top:3px solid #E8B84B;"><div style="font-size:9px;font-weight:700;color:rgba(255,255,255,0.5);text-transform:uppercase;letter-spacing:.5px;margin-bottom:3px;">TOTAL</div><div style="font-family:'Playfair Display',serif;font-size:15px;font-weight:700;color:#E8B84B;">${fmtMXN(granTotal)}</div><div style="font-size:10px;color:rgba(255,255,255,0.4);">${mesesArr.length} mes${mesesArr.length!==1?'es':''}</div></div></div><div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;"><thead><tr><th class="dp-th">Mes</th>${seleccionados.map(c=>`<th class="dp-th" style="text-align:right;color:${colores[c]||'#8A9BB0'};">${CONCEPTO_KEYS.find(x=>x.key===c)?.label||c}</th>`).join('')}<th class="dp-th" style="text-align:right;">Total</th></tr></thead><tbody>${mesesArr.map(m=>{const tot=seleccionados.reduce((s,c)=>s+(m.totales[c]||0),0);return`<tr style="border-bottom:1px solid #F5F0E8;"><td style="padding:9px 14px;font-weight:600;color:#0D1B2A;">${m.label}</td>${seleccionados.map(c=>`<td style="padding:9px 14px;text-align:right;font-size:12px;">${fmtMXN(m.totales[c]||0)}</td>`).join('')}<td style="padding:9px 14px;text-align:right;font-family:'Playfair Display',serif;font-size:13px;font-weight:700;">${fmtMXN(tot)}</td></tr>`;}).join('')}<tr style="background:#F9F5EF;"><td style="padding:10px 14px;font-weight:700;">TOTAL</td>${seleccionados.map(c=>`<td style="padding:10px 14px;text-align:right;font-family:'Playfair Display',serif;font-size:13px;font-weight:700;color:${colores[c]||'#0D1B2A'};">${fmtMXN(totalesG[c])}</td>`).join('')}<td style="padding:10px 14px;text-align:right;font-family:'Playfair Display',serif;font-size:14px;font-weight:900;">${fmtMXN(granTotal)}</td></tr></tbody></table></div>`+_estExtrasTablaHTML(extrasPorNombre);
 }
 window.estImprimirDeudores=function(){
   const deudores=window._estDeudoresActual||[];
@@ -9524,6 +9544,15 @@ window.estImprimirConceptos=function(){
   // Leyenda
   const leyenda=seleccionados.map(c=>`<span style="display:inline-flex;align-items:center;gap:5px;margin:3px 6px;font-size:11px;"><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${colores[c]};"></span>${etiquetas[c]}</span>`).join('');
 
+  // Desglose de Mutualista (c6) y Conceptos Extra (c7) por el nombre dado en cada recibo
+  const extrasArr=Object.entries(window._estConceptosData?.extrasPorNombre||{}).sort((a,b)=>b[1]-a[1]);
+  const extrasSection=extrasArr.length?`<div class="section">
+    <div class="section-title">📋 Desglose de Mutualista y Conceptos Extra (por nombre)</div>
+    <table><thead><tr><th>Concepto (nombre dado)</th><th>Cobrado</th></tr></thead>
+    <tbody>${extrasArr.map(([n,v])=>`<tr><td style="padding:10px 14px;border-bottom:1px solid #EDE8DF;">${esc(n)}</td><td style="text-align:right;padding:10px 14px;border-bottom:1px solid #EDE8DF;font-family:Georgia,serif;font-weight:700;">$${v.toLocaleString('es-MX',{minimumFractionDigits:2})}</td></tr>`).join('')}</tbody>
+    <tfoot><tr class="total-row"><td>TOTAL EXTRAS</td><td style="text-align:right;padding:12px 14px;font-size:15px;">$${extrasArr.reduce((s,[,v])=>s+v,0).toLocaleString('es-MX',{minimumFractionDigits:2})}</td></tr></tfoot>
+    </table></div>`:'';
+
   const win=window.open('','_blank');
   if(!win){dpShowToast('Permite ventanas emergentes para imprimir','error');return;}
   win.document.write(`<!DOCTYPE html><html lang="es"><head>
@@ -9595,6 +9624,8 @@ window.estImprimirConceptos=function(){
       </tr></tfoot>
     </table>
   </div>
+
+  ${extrasSection}
 
   <div class="footer">
     Club de Leones Veracruz A.C. &nbsp;·&nbsp; Documento generado el ${fechaHoy} &nbsp;·&nbsp; Uso interno — confidencial
@@ -16327,7 +16358,7 @@ window.finCategoriaPDF = function() {
 
 // IMPORTANTE: APP_VERSION debe coincidir con "version" en version.json y con
 // VERSION en sw.js. Bumpear las 3 juntas o el banner de update queda pegado.
-const APP_VERSION = '20260630-005';
+const APP_VERSION = '20260630-006';
 
 // Referencia al SW en espera (si existe), compartida entre ambas rutas de actualización
 window._pendingSW = null;
