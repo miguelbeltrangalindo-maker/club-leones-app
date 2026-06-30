@@ -199,7 +199,7 @@ function showPushBanner(uid) {
   banner.style.display = 'block';
 }
 
-function hidePushBanner() {
+window.hidePushBanner = function() {
   const b = document.getElementById('push-banner');
   if (b) b.style.display = 'none';
 }
@@ -5660,7 +5660,7 @@ function dpRenderTable(members) {
           <button class="dp-tbl-btn" onclick="dpToggleActions('${m.uid}',this)" style="background:#F5F0E8;color:#0D1B2A;font-weight:700;">⋯ Acciones</button>
           <div id="dp-acts-${m.uid}" class="dp-acts-menu" style="display:none;position:fixed;z-index:9500;background:#fff;border:1px solid #EDE8DF;border-radius:11px;box-shadow:0 12px 40px rgba(13,27,42,0.18);padding:6px;min-width:185px;">
             <button class="dp-acts-item" style="background:rgba(201,151,58,0.12);color:#C9973A;" onclick="dpCloseActsMenus();dpOpenEdit('${m.uid}')">✏️ Editar</button>
-            ${m.rol==='pendiente'?`<button class="dp-acts-item" style="background:rgba(26,122,74,0.1);color:#1A7A4A;" onclick="dpCloseActsMenus();dpAprobar('${m.uid}','${m.nombre}')">✓ Aprobar</button>`:''}
+            ${m.rol==='pendiente'?`<button class="dp-acts-item" style="background:rgba(26,122,74,0.1);color:#1A7A4A;" onclick="dpCloseActsMenus();dpAprobar('${m.uid}','${jsAttrEsc(m.nombre||'')}')">✓ Aprobar</button>`:''}
             ${esBaja
               ? `<button class="dp-acts-item" style="background:rgba(26,122,74,0.1);color:#1A7A4A;" onclick="dpCloseActsMenus();dpReactivarSocio('${m.uid}','${jsAttrEsc((m.nombre||'')+' '+(m.apellido||''))}')">🔓 Reactivar</button>`
               : `<button class="dp-acts-item" style="background:${m.activoSistema===false?'rgba(26,122,74,0.1)':'rgba(192,57,43,0.08)'};color:${m.activoSistema===false?'#1A7A4A':'#C0392B'};" onclick="dpCloseActsMenus();dpToggleActivo('${m.uid}', ${m.activoSistema===false ? 'true' : 'false'}, '${jsAttrEsc((m.nombre||'')+' '+(m.apellido||''))}')">${m.activoSistema===false?'🔓 Activar':'⛔ Inactivar'}</button>`}
@@ -6932,7 +6932,7 @@ async function cambioDirectivaCompute(startYear, force = false) {
   const enRango = f => f && String(f) >= desde && String(f) <= hasta;
   const ingMap = {}; CD_ING_ORDER.forEach(k => ingMap[k] = 0);
   const egrMap = {}; CD_EGR_ORDER.forEach(k => egrMap[k] = 0);
-  (movs || []).filter(m => enRango(m.fecha)).forEach(m => {
+  (movs || []).filter(m => enRango(m.fecha) && m.tipoEspecial !== 'transferencia_interna').forEach(m => {
     if (m.tipo === 'ingreso') ingMap[cdClasifIngreso(m)] += Number(m.monto || 0);
     else if (m.tipo === 'egreso') egrMap[cdClasifEgreso(m)] += Number(m.monto || 0);
   });
@@ -12598,6 +12598,9 @@ window.rsvGuardarReserva = async function() {
       data.anticipo = Number(prev?.anticipo || 0);
       data.saldoPagado = Number(prev?.saldoPagado || 0);
       data.movimientoFinIds = Array.isArray(prev?.movimientoFinIds) ? prev.movimientoFinIds : [];
+      // Si cambió la fecha del evento, reiniciar los avisos de estacionamiento ya enviados
+      // para que se vuelvan a disparar en las ventanas (7d/1d/0d) de la nueva fecha.
+      if (prev && prev.fecha !== fecha) data.notifsEstacionamiento = [];
       await updateDoc(doc(db,'reservaciones',id), data);
       await logAuditoria('editar_reserva', { id, evento, fecha, salon: salon?.nombre });
     } else {
@@ -15867,7 +15870,7 @@ window.finCategoriaPDF = function() {
 
 // IMPORTANTE: APP_VERSION debe coincidir con "version" en version.json y con
 // VERSION en sw.js. Bumpear las 3 juntas o el banner de update queda pegado.
-const APP_VERSION = '20260629-004';
+const APP_VERSION = '20260629-005';
 
 // Referencia al SW en espera (si existe), compartida entre ambas rutas de actualización
 window._pendingSW = null;
