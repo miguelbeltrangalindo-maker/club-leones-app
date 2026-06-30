@@ -5268,60 +5268,15 @@ window.dashboardLoad = async function(force = false) {
     const _mut = calcSaldoMutualista(recibos, mutPagos, null);
     document.getElementById('dash-deuda-mut').textContent = fmt(_mut.saldoTotal);
 
-    // Top 5 morosos
-    const topEl = document.getElementById('dash-top-morosos');
-    if (morosos.length === 0) {
-      topEl.innerHTML = '<div style="text-align:center;padding:24px;color:#1A7A4A;font-weight:600;font-size:13px;">🎉 Todos los socios al corriente.</div>';
-    } else {
-      topEl.innerHTML = morosos.slice(0,5).map((m,i) => `
-        <div style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:${i<4?'1px solid #F5F0E8':'none'};">
-          <div style="width:26px;height:26px;border-radius:50%;background:${i===0?'#C0392B':i<3?'#E67E22':'#C9973A'};color:#fff;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:800;flex-shrink:0;">${i+1}</div>
-          <div style="flex:1;min-width:0;">
-            <div style="font-size:13px;font-weight:700;color:#0D1B2A;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(m.nombre)}</div>
-            <div style="font-size:11px;color:#8A9BB0;">#${esc(m.numeroSocio||'—')} · ${m.count} mes${m.count>1?'es':''}</div>
-          </div>
-          <div style="font-family:'Playfair Display',serif;font-size:14px;font-weight:800;color:#C0392B;">${fmt(m.monto)}</div>
-          <button class="dp-tbl-btn" style="background:rgba(26,122,74,0.1);color:#1A7A4A;font-weight:700;" onclick="dpPagosOpenPagoCompuesto('${m.uid}')">💰</button>
-        </div>`).join('');
-    }
-
-    // Sparkline 6 meses: suma TODOS los ingresos del mes (no solo cuotas)
-    const sparkEl = document.getElementById('dash-sparkline');
-    const ahora = new Date();
-    const meses = [];
-    for (let i = 5; i >= 0; i--) {
-      const d = new Date(ahora.getFullYear(), ahora.getMonth()-i, 1);
-      meses.push({
-        label: d.toLocaleDateString('es-MX',{month:'short'}),
-        anio: d.getFullYear(), mes: d.getMonth(),
-        total: 0
-      });
-    }
-    movs.forEach(m => {
-      if (m.tipo !== 'ingreso' || m.tipoEspecial === 'transferencia_interna') return;
-      const fechaRaw = m.fecha;
-      if (!fechaRaw) return;
-      const fd = parseDateLocal(fechaRaw);
-      if (!fd || isNaN(fd.getTime())) return;
-      const monto = Number(m.monto||0);
-      meses.forEach(b => { if (fd.getFullYear() === b.anio && fd.getMonth() === b.mes) b.total += monto; });
-    });
-    const maxBar = Math.max(...meses.map(b => b.total), 1);
-    sparkEl.innerHTML = `
-      <div style="display:flex;align-items:flex-end;justify-content:space-between;gap:8px;height:80px;margin-bottom:10px;">
-        ${meses.map(b => {
-          const h = Math.max(2, (b.total/maxBar) * 70);
-          return `<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:4px;">
-            <div title="${fmt(b.total)}" style="width:100%;height:${h}px;background:linear-gradient(to top,#C9973A,#E8B84B);border-radius:4px 4px 0 0;-webkit-print-color-adjust:exact;"></div>
-          </div>`;
-        }).join('')}
-      </div>
-      <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:10px;color:#8A9BB0;text-transform:uppercase;letter-spacing:.5px;font-weight:700;">
-        ${meses.map(b => `<div style="flex:1;text-align:center;">${b.label}</div>`).join('')}
-      </div>
-      <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:11px;color:#0D1B2A;font-weight:700;margin-top:4px;">
-        ${meses.map(b => `<div style="flex:1;text-align:center;font-family:'Playfair Display',serif;">${fmt(b.total).replace('.00','')}</div>`).join('')}
-      </div>`;
+    // Guardar datos para las cajas dinámicas (se renderizan según la métrica/tarjeta seleccionada)
+    window._dashData = {
+      movs, recibos, mutPagos, usuarios,
+      saldoBanco, saldoCaja,
+      saldoBancoIni: (cfgB.exists() ? Number(cfgB.data().monto||0) : 0),
+      saldoCajaIni:  (cfgC.exists() ? Number(cfgC.data().monto||0) : 0),
+      morosos, moraTotal, mut: _mut,
+    };
+    dashSelectMetric(window._dashMetric || 'mora');
   } catch(e) {
     console.error('dashboardLoad ERROR:', e);
   }
@@ -5334,6 +5289,162 @@ window.dashboardLoad = async function(force = false) {
 
   // Badge de la Bandeja de Alertas (admin/subadmin que ven finanzas)
   if (esAdminSub && verFinanzas) alertasBandejaRefreshBadge();
+};
+
+// ══════════════════════════════════════════════════════════════
+//  Dashboard: cajas dinámicas. Las 4 tarjetas (banco/caja/mora/
+//  mutualista) son pestañas; al tocar una, las dos cajas de abajo
+//  muestran su detalle + gráfica. Datos en window._dashData.
+// ══════════════════════════════════════════════════════════════
+const DASH_METRIC_META = {
+  banco:      { color: '#1A7A4A', card: 'dash-kpi-banco' },
+  caja:       { color: '#2980B9', card: 'dash-kpi-caja' },
+  mora:       { color: '#C0392B', card: 'dash-kpi-mora' },
+  mutualista: { color: '#8E44AD', card: 'dash-kpi-mutualista' },
+};
+function dashFmtMoney(n) { return '$' + Number(n||0).toLocaleString('es-MX', { minimumFractionDigits: 2 }); }
+
+function dashMeses6() {
+  const ahora = new Date();
+  const meses = [];
+  for (let i = 5; i >= 0; i--) {
+    const d = new Date(ahora.getFullYear(), ahora.getMonth()-i, 1);
+    meses.push({
+      label: d.toLocaleDateString('es-MX',{month:'short'}),
+      anio: d.getFullYear(), mes: d.getMonth(),
+      endTs: new Date(d.getFullYear(), d.getMonth()+1, 0, 23,59,59).getTime(),
+      total: 0,
+    });
+  }
+  return meses;
+}
+function dashRenderBars(buckets, color) {
+  const maxBar = Math.max(...buckets.map(b => Math.abs(b.total)), 1);
+  return `
+    <div style="display:flex;align-items:flex-end;justify-content:space-between;gap:8px;height:80px;margin-bottom:10px;">
+      ${buckets.map(b => {
+        const h = Math.max(2, (Math.abs(b.total)/maxBar) * 70);
+        return `<div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;">
+          <div title="${dashFmtMoney(b.total)}" style="width:100%;height:${h}px;background:linear-gradient(to top,${color}bb,${color});border-radius:4px 4px 0 0;-webkit-print-color-adjust:exact;"></div>
+        </div>`;
+      }).join('')}
+    </div>
+    <div style="display:flex;justify-content:space-between;gap:8px;font-size:10px;color:#8A9BB0;text-transform:uppercase;letter-spacing:.5px;font-weight:700;">
+      ${buckets.map(b => `<div style="flex:1;text-align:center;">${esc(b.label)}</div>`).join('')}
+    </div>
+    <div style="display:flex;justify-content:space-between;gap:8px;font-size:11px;color:#0D1B2A;font-weight:700;margin-top:4px;">
+      ${buckets.map(b => `<div style="flex:1;text-align:center;font-family:'Playfair Display',serif;">${dashFmtMoney(b.total).replace('.00','')}</div>`).join('')}
+    </div>`;
+}
+// Saldo al cierre de cada uno de los últimos 6 meses para un destino (banco/caja)
+function dashSaldoMensual(movs, saldoInicial, destino) {
+  return dashMeses6().map(b => {
+    let saldo = saldoInicial;
+    (movs||[]).forEach(m => {
+      const esDestino = m.destino === destino || (destino === 'banco' && !m.destino);
+      if (!esDestino) return;
+      const fd = parseDateLocal(m.fecha);
+      if (!fd || isNaN(fd.getTime()) || fd.getTime() > b.endTs) return;
+      const amt = Number(m.monto||0);
+      if (m.tipo === 'ingreso') saldo += amt; else if (m.tipo === 'egreso') saldo -= amt;
+    });
+    return { label: b.label, total: saldo };
+  });
+}
+function dashAging(recibos, usuarios) {
+  const sociosMap = {}; (usuarios||[]).forEach(u => { const k = u.uid || u.id; if (k) sociosMap[k] = u; });
+  const hoy = new Date(); hoy.setHours(0,0,0,0);
+  const meses = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+  const ag = { b0_30:0, b31_60:0, b61_90:0, b90_mas:0 };
+  (recibos||[]).forEach(r => {
+    if ((r.estado||'').toLowerCase() === 'pagado') return;
+    const saldo = Math.max(0, Number(r.total||0) - Number(r.montoPagado||0)); if (saldo <= 0) return;
+    if (sociosMap[r.socioUID]?.estado === 'baja') return;
+    const mIdx = meses.indexOf(r.mes || 'Enero');
+    const fechaR = new Date(Number(r.anio||2026), mIdx < 0 ? 0 : mIdx, 28);
+    const dias = Math.max(0, Math.floor((hoy - fechaR) / 86400000));
+    if (dias <= 30) ag.b0_30 += saldo; else if (dias <= 60) ag.b31_60 += saldo;
+    else if (dias <= 90) ag.b61_90 += saldo; else ag.b90_mas += saldo;
+  });
+  return ag;
+}
+
+window.dashSelectMetric = function(metric) {
+  window._dashMetric = metric;
+  const d = window._dashData;
+  // Resaltar tarjeta activa
+  Object.values(DASH_METRIC_META).forEach(meta => {
+    const el = document.getElementById(meta.card);
+    if (el) el.style.boxShadow = 'none';
+  });
+  const sel = DASH_METRIC_META[metric] || DASH_METRIC_META.mora;
+  const activeCard = document.getElementById(sel.card);
+  if (activeCard) activeCard.style.boxShadow = `0 0 0 2px ${sel.color}`;
+
+  const ttlL = document.getElementById('dash-boxL-ttl'), subL = document.getElementById('dash-boxL-sub'), bodyL = document.getElementById('dash-boxL-body');
+  const ttlR = document.getElementById('dash-boxR-ttl'), subR = document.getElementById('dash-boxR-sub'), bodyR = document.getElementById('dash-boxR-body');
+  if (!d || !bodyL || !bodyR) return;
+
+  const statRow = (k, v, c) => `<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid #F5F0E8;"><span style="font-size:13px;color:#5A6B7E;">${esc(k)}</span><span style="font-size:15px;font-weight:800;color:${c};font-family:'Playfair Display',serif;">${dashFmtMoney(v)}</span></div>`;
+
+  if (metric === 'banco' || metric === 'caja') {
+    const color = metric === 'banco' ? '#1A7A4A' : '#2980B9';
+    const lbl = metric === 'banco' ? 'Banco' : 'Caja';
+    const icon = metric === 'banco' ? '🏛️' : '💵';
+    const saldoAct = metric === 'banco' ? d.saldoBanco : d.saldoCaja;
+    const saldoIni = metric === 'banco' ? d.saldoBancoIni : d.saldoCajaIni;
+    ttlL.textContent = `${icon} ${lbl} — este mes`; subL.textContent = 'Movimiento del mes en curso';
+    ttlR.textContent = `📈 Saldo de ${lbl} · 6 meses`; subR.textContent = 'Saldo al cierre de cada mes';
+    const ahora = new Date();
+    let ingMes = 0, egrMes = 0, cnt = 0;
+    (d.movs||[]).forEach(m => {
+      const esDestino = m.destino === metric || (metric === 'banco' && !m.destino);
+      if (!esDestino) return;
+      const fd = parseDateLocal(m.fecha); if (!fd || isNaN(fd.getTime())) return;
+      if (fd.getFullYear() !== ahora.getFullYear() || fd.getMonth() !== ahora.getMonth()) return;
+      const amt = Number(m.monto||0);
+      if (m.tipo === 'ingreso') { ingMes += amt; cnt++; } else if (m.tipo === 'egreso') { egrMes += amt; cnt++; }
+    });
+    bodyL.innerHTML = statRow('Saldo actual', saldoAct, color) + statRow('Ingresos del mes', ingMes, '#1A7A4A') + statRow('Egresos del mes', egrMes, '#C0392B') + statRow('Neto del mes', ingMes - egrMes, (ingMes - egrMes) >= 0 ? '#1A7A4A' : '#C0392B') + `<div style="font-size:11px;color:#8A9BB0;padding-top:10px;">${cnt} movimiento${cnt!==1?'s':''} registrado${cnt!==1?'s':''} este mes</div>`;
+    bodyR.innerHTML = dashRenderBars(dashSaldoMensual(d.movs, saldoIni, metric), color);
+
+  } else if (metric === 'mutualista') {
+    ttlL.textContent = '⚖️ Desglose mutualista'; subL.textContent = 'Estado del fondo';
+    ttlR.textContent = '📈 Aportaciones al fondo · 6 meses'; subR.textContent = 'Pagos recibidos por mes';
+    const m = d.mut || {};
+    bodyL.innerHTML = statRow('Cobrado a socios', m.cobrado || 0, '#1A7A4A') + statRow('Adeudos registrados', m.adeudos || 0, '#E67E22') + statRow('Pagado al fondo', m.pagadoFondo || 0, '#2980B9') + statRow('Saldo (deuda con mutualista)', m.saldoTotal || 0, '#8E44AD');
+    const meses = dashMeses6();
+    (d.mutPagos||[]).forEach(p => {
+      const t = (p.tipo || ''); if (t === 'adeudo' || t === 'saldo_inicial') return;
+      const fd = parseDateLocal(p.fecha || p.fechaPago); if (!fd || isNaN(fd.getTime())) return;
+      meses.forEach(b => { if (fd.getFullYear() === b.anio && fd.getMonth() === b.mes) b.total += Number(p.monto||0); });
+    });
+    bodyR.innerHTML = dashRenderBars(meses.map(b => ({ label: b.label, total: b.total })), '#8E44AD');
+
+  } else {
+    // mora (default)
+    ttlL.textContent = '🚨 Top 5 morosos'; subL.textContent = 'Mayor deuda primero';
+    ttlR.textContent = '⏳ Antigüedad de la mora'; subR.textContent = 'Cartera por días de atraso';
+    if (!d.morosos || d.morosos.length === 0) {
+      bodyL.innerHTML = '<div style="text-align:center;padding:24px;color:#1A7A4A;font-weight:600;font-size:13px;">🎉 Todos los socios al corriente.</div>';
+    } else {
+      bodyL.innerHTML = d.morosos.slice(0,5).map((m,i) => `
+        <div style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:${i<4?'1px solid #F5F0E8':'none'};">
+          <div style="width:26px;height:26px;border-radius:50%;background:${i===0?'#C0392B':i<3?'#E67E22':'#C9973A'};color:#fff;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:800;flex-shrink:0;">${i+1}</div>
+          <div style="flex:1;min-width:0;">
+            <div style="font-size:13px;font-weight:700;color:#0D1B2A;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(m.nombre)}</div>
+            <div style="font-size:11px;color:#8A9BB0;">#${esc(m.numeroSocio||'—')} · ${m.count} mes${m.count>1?'es':''}</div>
+          </div>
+          <div style="font-family:'Playfair Display',serif;font-size:14px;font-weight:800;color:#C0392B;">${dashFmtMoney(m.monto)}</div>
+          <button class="dp-tbl-btn" style="background:rgba(26,122,74,0.1);color:#1A7A4A;font-weight:700;" onclick="dpPagosOpenPagoCompuesto('${m.uid}')">💰</button>
+        </div>`).join('');
+    }
+    const ag = dashAging(d.recibos, d.usuarios);
+    bodyR.innerHTML = dashRenderBars([
+      { label: '0-30', total: ag.b0_30 }, { label: '31-60', total: ag.b31_60 },
+      { label: '61-90', total: ag.b61_90 }, { label: '90+', total: ag.b90_mas },
+    ], '#C0392B');
+  }
 };
 
 async function dashRsvWidgetLoad(force = false) {
@@ -15723,7 +15834,7 @@ window.finCategoriaPDF = function() {
 
 // IMPORTANTE: APP_VERSION debe coincidir con "version" en version.json y con
 // VERSION en sw.js. Bumpear las 3 juntas o el banner de update queda pegado.
-const APP_VERSION = '20260629-002';
+const APP_VERSION = '20260629-003';
 
 // Referencia al SW en espera (si existe), compartida entre ambas rutas de actualización
 window._pendingSW = null;
@@ -17855,20 +17966,21 @@ body.damas-theme .filter-tab-active { background:rgba(139,74,107,0.15); color:#5
         <!-- 💰 Salud financiera (visible a admin/subadmin/tesorero/presidente) -->
         <div id="dash-fin-bloque" style="display:none;margin-bottom:24px;">
           <div style="font-size:11px;font-weight:700;color:#8A9BB0;letter-spacing:1px;text-transform:uppercase;margin-bottom:10px;">💰 Salud financiera</div>
-          <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:14px;">
-            <div class="dp-stat" style="border-left:4px solid #1A7A4A;"><div style="font-size:20px;margin-bottom:6px;">🏛️</div><div class="dp-stat-val" id="dash-saldo-banco" style="color:#1A7A4A;">—</div><div class="dp-stat-lbl">Saldo en Banco</div></div>
-            <div class="dp-stat" style="border-left:4px solid #2980B9;"><div style="font-size:20px;margin-bottom:6px;">💵</div><div class="dp-stat-val" id="dash-saldo-caja" style="color:#2980B9;">—</div><div class="dp-stat-lbl">Saldo en Caja</div></div>
-            <div class="dp-stat" style="border-left:4px solid #C0392B;"><div style="font-size:20px;margin-bottom:6px;">⏳</div><div class="dp-stat-val" id="dash-mora-total" style="color:#C0392B;">—</div><div class="dp-stat-lbl">Mora total · <span id="dash-mora-n">0</span> socios</div></div>
-            <div class="dp-stat" style="border-left:4px solid #8E44AD;"><div style="font-size:20px;margin-bottom:6px;">⚖️</div><div class="dp-stat-val" id="dash-deuda-mut" style="color:#8E44AD;">—</div><div class="dp-stat-lbl">Deuda con Mutualista</div></div>
+          <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:6px;">
+            <div class="dp-stat" id="dash-kpi-banco" onclick="dashSelectMetric('banco')" style="border-left:4px solid #1A7A4A;cursor:pointer;transition:box-shadow .15s;"><div style="font-size:20px;margin-bottom:6px;">🏛️</div><div class="dp-stat-val" id="dash-saldo-banco" style="color:#1A7A4A;">—</div><div class="dp-stat-lbl">Saldo en Banco</div></div>
+            <div class="dp-stat" id="dash-kpi-caja" onclick="dashSelectMetric('caja')" style="border-left:4px solid #2980B9;cursor:pointer;transition:box-shadow .15s;"><div style="font-size:20px;margin-bottom:6px;">💵</div><div class="dp-stat-val" id="dash-saldo-caja" style="color:#2980B9;">—</div><div class="dp-stat-lbl">Saldo en Caja</div></div>
+            <div class="dp-stat" id="dash-kpi-mora" onclick="dashSelectMetric('mora')" style="border-left:4px solid #C0392B;cursor:pointer;transition:box-shadow .15s;"><div style="font-size:20px;margin-bottom:6px;">⏳</div><div class="dp-stat-val" id="dash-mora-total" style="color:#C0392B;">—</div><div class="dp-stat-lbl">Mora total · <span id="dash-mora-n">0</span> socios</div></div>
+            <div class="dp-stat" id="dash-kpi-mutualista" onclick="dashSelectMetric('mutualista')" style="border-left:4px solid #8E44AD;cursor:pointer;transition:box-shadow .15s;"><div style="font-size:20px;margin-bottom:6px;">⚖️</div><div class="dp-stat-val" id="dash-deuda-mut" style="color:#8E44AD;">—</div><div class="dp-stat-lbl">Deuda con Mutualista</div></div>
           </div>
+          <div style="font-size:11px;color:#A8B3C2;margin-bottom:14px;">👆 Toca una tarjeta para ver su detalle y gráfica abajo</div>
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
             <div class="dp-card">
-              <div class="dp-card-hdr"><span class="dp-card-ttl">🚨 Top 5 morosos</span><span style="font-size:11px;color:#8A9BB0;">Mayor deuda primero</span></div>
-              <div id="dash-top-morosos" style="padding:8px 16px 16px;"><div style="text-align:center;padding:20px;color:#8A9BB0;font-size:12px;">Cargando...</div></div>
+              <div class="dp-card-hdr"><span class="dp-card-ttl" id="dash-boxL-ttl">🚨 Top 5 morosos</span><span style="font-size:11px;color:#8A9BB0;" id="dash-boxL-sub">Mayor deuda primero</span></div>
+              <div id="dash-boxL-body" style="padding:8px 16px 16px;min-height:130px;"><div style="text-align:center;padding:20px;color:#8A9BB0;font-size:12px;">Cargando...</div></div>
             </div>
             <div class="dp-card">
-              <div class="dp-card-hdr"><span class="dp-card-ttl">📈 Ingresos últimos 6 meses</span><span style="font-size:11px;color:#8A9BB0;">Todos los ingresos del mes</span></div>
-              <div id="dash-sparkline" style="padding:14px 18px 18px;min-height:120px;"></div>
+              <div class="dp-card-hdr"><span class="dp-card-ttl" id="dash-boxR-ttl">⏳ Antigüedad de la mora</span><span style="font-size:11px;color:#8A9BB0;" id="dash-boxR-sub">Cartera por días de atraso</span></div>
+              <div id="dash-boxR-body" style="padding:14px 18px 18px;min-height:130px;"></div>
             </div>
           </div>
         </div>
