@@ -10354,17 +10354,19 @@ async function rbAdelantadoCalc() {
   const tarifas = {};
   await Promise.all(anios.map(async y => { tarifas[y] = await cuotasGetTarifas(y); }));
   const esViuda = m.tipo === 'viuda';
+  let c7labelDef = '';
   const items = meses.map(x => {
     const t = tarifas[x.anio] || {};
-    const c1=esViuda?0:Number(t.c1||0), c2=esViuda?0:Number(t.c2||0), c3=esViuda?0:Number(t.c3||0),
-          c4=esViuda?0:Number(t.c4||0), c5=esViuda?0:Number(t.c5||0), c6=Number(t.c6||0), c7=esViuda?0:Number(t.c7||0);
-    const tarifaTotal = esViuda ? c6 : (c1+c2+c3+c4+c5+c6+c7);
     const existente = (window.allRecibos||[]).find(r => r.socioUID === uid && r.mes === x.mes && r.anio === x.anio);
-    const cobro = existente ? Number(existente.total || tarifaTotal) : tarifaTotal;
-    return { mes:x.mes, anio:x.anio, c1,c2,c3,c4,c5,c6, c6label:t.c6label||'', c7, c7label:t.c7label||'', total: cobro, existente };
+    // Prellenado del grid: si el recibo ya existe usa SUS conceptos; si no, la tarifa (viuda solo c6).
+    const g = (k) => existente ? Number(existente[k]||0) : (esViuda && k !== 'c6' ? 0 : Number(t[k]||0));
+    const c1=g('c1'),c2=g('c2'),c3=g('c3'),c4=g('c4'),c5=g('c5'),c6=g('c6'),c7=g('c7');
+    const c7label = existente ? (existente.c7label||'') : (t.c7label||'');
+    if (!c7labelDef && c7label) c7labelDef = c7label;
+    return { mes:x.mes, anio:x.anio, c1,c2,c3,c4,c5,c6, c6label: existente?(existente.c6label||'Mutualista'):(t.c6label||'Mutualista'), c7, c7label, total: c1+c2+c3+c4+c5+c6+c7, existente };
   });
   const totalGeneral = items.reduce((s,i) => s + i.total, 0);
-  return { m, esViuda, items, totalGeneral };
+  return { m, esViuda, items, totalGeneral, c7label: c7labelDef };
 }
 window.rbAdelantadoPreview = async function() {
   const cont = document.getElementById('rb-adel-preview');
@@ -10378,18 +10380,44 @@ window.rbAdelantadoPreview = async function() {
       exDiv.innerHTML = `⚠️ Este socio ya tiene <b>${ya.length}</b> mes(es) pagados por adelantado. <button onclick="rbAdelantadoRevertir('${esc(grupos[0])}')" style="margin-left:6px;padding:4px 10px;background:#fff;color:#C0392B;border:1.5px solid #C0392B;border-radius:7px;font-size:11px;font-weight:700;cursor:pointer;">↺ Revertir el adelantado existente</button>`;
     } else { exDiv.style.display = 'none'; }
   } else { exDiv.style.display = 'none'; }
-  if (!uid) { cont.innerHTML = '<div style="font-size:12px;color:#8A9BB0;">Elige un socio para ver la vista previa.</div>'; return; }
+  if (!uid) { cont.innerHTML = '<div style="font-size:12px;color:#8A9BB0;">Elige un socio para configurar las cuotas.</div>'; return; }
   cont.innerHTML = '<div style="font-size:12px;color:#8A9BB0;">Calculando...</div>';
   const data = await rbAdelantadoCalc();
   if (!data) { cont.innerHTML = '<div style="font-size:12px;color:#C0392B;">No se pudo calcular (¿hay tarifas configuradas para ese año?).</div>'; return; }
-  const nuevos = data.items.filter(i => !i.existente).length;
-  const marcar = data.items.filter(i => i.existente).length;
+  const CC = [['c1','Cuota Socio'],['c2','Cuota Dama'],['c3','Percápita'],['c4','Coronación'],['c5','Navidad'],['c6','Mutualista'],['c7','Extra']];
+  const th = `<th style="text-align:left;padding:5px 8px;font-size:10px;color:#8A9BB0;text-transform:uppercase;white-space:nowrap;">Mes</th>` + CC.map(([,l]) => `<th style="padding:5px 6px;font-size:10px;color:#8A9BB0;text-transform:uppercase;white-space:nowrap;">${l}</th>`).join('') + `<th style="padding:5px 8px;font-size:10px;color:#8A9BB0;text-transform:uppercase;text-align:right;">Total</th>`;
+  const rows = data.items.map((it,mi) => `<tr data-mi="${mi}" data-mes="${esc(it.mes)}" data-anio="${it.anio}">
+    <td style="white-space:nowrap;font-size:12px;color:#5A6B7E;padding:4px 8px;">${esc(it.mes)} ${it.anio}${it.existente?' <span style="color:#C9973A;font-size:9px;">(existe)</span>':''}</td>
+    ${CC.map(([k]) => `<td style="padding:3px 4px;"><input type="number" min="0" step="any" class="rb-adel-c" data-mi="${mi}" data-k="${k}" value="${Number(it[k]||0)?Number(it[k]):''}" oninput="rbAdelantadoRecalc()" style="width:72px;padding:5px 6px;border:1px solid #E8E0D4;border-radius:6px;font-size:12px;text-align:right;"></td>`).join('')}
+    <td style="text-align:right;font-weight:700;padding:4px 8px;font-size:12.5px;" id="rb-adel-rowtot-${mi}">$0.00</td>
+  </tr>`).join('');
   cont.innerHTML = `
-    <div style="font-size:11px;color:#8A9BB0;margin-bottom:6px;">${data.esViuda?'Viuda — solo cuota mutualista':'Cuotas según tarifa'} · ${data.items.length} meses</div>
-    ${data.items.map(i => `<div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid #F0EBE0;font-size:12.5px;"><span style="color:#5A6B7E;">${esc(i.mes)} ${i.anio}${i.existente?' <span style="color:#C9973A;font-size:10px;">(ya existe → se marca pagado)</span>':''}</span><span style="font-weight:700;color:#0D1B2A;">${fmtMXN(i.total)}</span></div>`).join('')}
-    <div style="display:flex;justify-content:space-between;padding:8px 0 0;font-weight:800;font-size:14px;"><span>Total a cobrar</span><span style="color:#1A7A4A;">${fmtMXN(data.totalGeneral)}</span></div>
-    <div style="font-size:11px;color:#8A9BB0;margin-top:6px;">${nuevos} recibo(s) nuevo(s) · ${marcar} existente(s) se marcarán pagados</div>`;
+    <div style="margin-bottom:10px;"><div class="cd-lbl">Nombre del concepto "Extra" (⑦)</div><input type="text" id="rb-adel-c7label" value="${esc(data.c7label||'')}" placeholder="Ej: Aportación especial, Rifa…" class="cd-inp" style="max-width:280px;"></div>
+    <div style="font-size:11px;color:#8A9BB0;margin-bottom:8px;">Edita los montos por mes y concepto. Las cuotas únicas (Coronación, Navidad) ponlas solo en el mes que correspondan; lo que dejes en 0 no se cobra.</div>
+    <div style="overflow-x:auto;"><table style="border-collapse:collapse;min-width:100%;"><thead><tr>${th}</tr></thead><tbody>${rows}</tbody></table></div>
+    <div style="display:flex;justify-content:space-between;padding:10px 2px 0;margin-top:6px;border-top:2px solid #EDE8DF;font-weight:800;font-size:14px;"><span>Total a cobrar</span><span id="rb-adel-granttot" style="color:#1A7A4A;">$0.00</span></div>`;
+  rbAdelantadoRecalc();
 };
+window.rbAdelantadoRecalc = function() {
+  const byMi = {};
+  document.querySelectorAll('.rb-adel-c').forEach(inp => { const mi = inp.dataset.mi; byMi[mi] = (byMi[mi]||0) + (Number(inp.value)||0); });
+  let grand = 0;
+  Object.entries(byMi).forEach(([mi,t]) => { const el = document.getElementById('rb-adel-rowtot-'+mi); if (el) el.textContent = fmtMXN(t); grand += t; });
+  const g = document.getElementById('rb-adel-granttot'); if (g) g.textContent = fmtMXN(grand);
+};
+function rbAdelantadoLeerGrid() {
+  const uid = document.getElementById('rb-adel-socio')?.value || '';
+  const m = (window.allMembers||[]).find(x => x.uid === uid);
+  const c7label = (document.getElementById('rb-adel-c7label')?.value || '').trim();
+  const items = [...document.querySelectorAll('#rb-adel-preview tbody tr[data-mi]')].map(tr => {
+    const mes = tr.dataset.mes, anio = parseInt(tr.dataset.anio) || 0;
+    const get = k => Number(tr.querySelector(`.rb-adel-c[data-k="${k}"]`)?.value) || 0;
+    const c1=get('c1'),c2=get('c2'),c3=get('c3'),c4=get('c4'),c5=get('c5'),c6=get('c6'),c7=get('c7');
+    const existente = (window.allRecibos||[]).find(r => r.socioUID===uid && r.mes===mes && r.anio===anio);
+    return { mes, anio, c1,c2,c3,c4,c5,c6, c6label:'Mutualista', c7, c7label, total: c1+c2+c3+c4+c5+c6+c7, existente };
+  });
+  return { m, items, totalGeneral: items.reduce((s,i) => s + i.total, 0) };
+}
 window.rbAdelantadoGuardar = async function() {
   const btn = document.getElementById('rb-adel-btn');
   const uid = document.getElementById('rb-adel-socio')?.value || '';
@@ -10399,30 +10427,35 @@ window.rbAdelantadoGuardar = async function() {
   const periodo = document.getElementById('rb-adel-periodo')?.value || 'sem1';
   btn.disabled = true; btn.textContent = '⏳ Procesando...';
   try {
-    const data = await rbAdelantadoCalc();
-    if (!data || !data.items.length) { dpShowToast('Nada que cobrar','error'); return; }
+    const data = rbAdelantadoLeerGrid();            // lee los montos EDITADOS del grid
     const m = data.m;
+    if (!m) { dpShowToast('Socio no encontrado','error'); return; }
+    const items = (data.items || []).filter(i => i.total > 0);  // ignora meses en 0
+    if (!items.length) { dpShowToast('Captura al menos un monto','error'); return; }
+    const totalGeneral = items.reduce((s,i) => s + i.total, 0);
     const grupoId = 'adel_' + uid + '_' + Date.now();
     const periodoLbl = periodo==='sem1' ? 'Semestre Jul-Dic' : periodo==='sem2' ? 'Semestre Ene-Jun' : 'Anual Jul-Jun';
     const concepto = `Cuotas adelantadas (${periodoLbl}) — ${(m.nombre||'')+' '+(m.apellido||'')}`.trim();
     let movId = null;
-    try { movId = await finAutoMovimiento('ingreso', 'Cuotas de Socios', concepto, data.totalGeneral, fecha, 'recibo', destino, { pagoAdelantadoGrupo: grupoId }); } catch(e) { console.error('mov adelantado:', e); }
+    try { movId = await finAutoMovimiento('ingreso', 'Cuotas de Socios', concepto, totalGeneral, fecha, 'recibo', destino, { pagoAdelantadoGrupo: grupoId }); } catch(e) { console.error('mov adelantado:', e); }
     const base = { pagoAdelantado:true, pagoAdelantadoGrupo:grupoId, pagoAdelantadoPeriodo:periodo, estado:'pagado', fechaPago:fecha, movimientoDestino:destino, modificado:new Date().toISOString() };
-    for (const i of data.items) {
+    const concs = i => ({ c1:i.c1,c2:i.c2,c3:i.c3,c4:i.c4,c5:i.c5,c6:i.c6,c6label:i.c6label,c7:i.c7,c7label:i.c7label, total:i.total, montoPagado:i.total });
+    for (const i of items) {
       if (i.existente) {
-        await updateDoc(doc(db,'recibos',i.existente.id), { ...base, montoPagado: Number(i.existente.total || i.total), pagoAdelantadoCreado:false });
+        // Existente: actualiza conceptos a lo editado + márcalo pagado
+        await updateDoc(doc(db,'recibos',i.existente.id), { ...base, ...concs(i), pagoAdelantadoCreado:false });
       } else {
         await addDoc(collection(db,'recibos'), {
           socioUID:uid, nombreSocio:(m.nombre||'')+' '+(m.apellido||''), apellidoSocio:m.apellido||'', numeroSocio:m.numeroSocio||'', subtipo:m.tipo||'socio',
-          mes:i.mes, anio:i.anio, c1:i.c1,c2:i.c2,c3:i.c3,c4:i.c4,c5:i.c5,c6:i.c6,c6label:i.c6label,c7:i.c7,c7label:i.c7label,
-          descuento:0, descuentoLabel:'', notas:'', loteNota:'Pago adelantado ('+periodoLbl+')', total:i.total,
-          ...base, montoPagado:i.total, pagoAdelantadoCreado:true, movimientoFinId:null,
+          mes:i.mes, anio:i.anio, ...concs(i),
+          descuento:0, descuentoLabel:'', notas:'', loteNota:'Pago adelantado ('+periodoLbl+')',
+          ...base, pagoAdelantadoCreado:true, movimientoFinId:null,
           autorUID:window.currentUser?.uid||'', autorNombre:(window.currentUser?.nombre||'')+' '+(window.currentUser?.apellido||''), creado:new Date().toISOString(),
         });
       }
     }
-    await logAuditoria('pago_adelantado', { socio:(m.nombre||'')+' '+(m.apellido||''), uid, periodo, total:data.totalGeneral, meses:data.items.length, grupoId });
-    dpShowToast(`✅ ${data.items.length} recibos cobrados por adelantado · ${fmtMXN(data.totalGeneral)}`,'success');
+    await logAuditoria('pago_adelantado', { socio:(m.nombre||'')+' '+(m.apellido||''), uid, periodo, total:totalGeneral, meses:items.length, grupoId });
+    dpShowToast(`✅ ${items.length} recibos cobrados por adelantado · ${fmtMXN(totalGeneral)}`,'success');
     rbAdelantadoCerrar();
     await rbLoad();
   } catch(e) {
@@ -16358,7 +16391,7 @@ window.finCategoriaPDF = function() {
 
 // IMPORTANTE: APP_VERSION debe coincidir con "version" en version.json y con
 // VERSION en sw.js. Bumpear las 3 juntas o el banner de update queda pegado.
-const APP_VERSION = '20260630-006';
+const APP_VERSION = '20260630-007';
 
 // Referencia al SW en espera (si existe), compartida entre ambas rutas de actualización
 window._pendingSW = null;
@@ -20154,7 +20187,7 @@ body.damas-theme .filter-tab-active { background:rgba(139,74,107,0.15); color:#5
 <!-- MODAL LOTE -->
 <!-- ════ MODAL: PAGO ADELANTADO (semestre/anual) ════ -->
 <div id="rb-modal-adelantado" style="display:none;position:fixed;inset:0;background:rgba(13,27,42,0.7);backdrop-filter:blur(4px);z-index:9300;align-items:center;justify-content:center;padding:24px;overflow-y:auto;" onclick="if(event.target===this)rbAdelantadoCerrar()">
-  <div style="background:#fff;border-radius:18px;width:100%;max-width:540px;box-shadow:0 24px 80px rgba(13,27,42,0.35);padding:24px 28px;max-height:90vh;overflow-y:auto;">
+  <div style="background:#fff;border-radius:18px;width:100%;max-width:840px;box-shadow:0 24px 80px rgba(13,27,42,0.35);padding:24px 28px;max-height:90vh;overflow-y:auto;">
     <div style="font-family:'Playfair Display',serif;font-size:20px;font-weight:700;color:#0D1B2A;margin-bottom:4px;">💳 Pago adelantado</div>
     <div style="font-size:12px;color:#8A9BB0;margin-bottom:16px;">Cobra por adelantado un semestre o año. Los recibos quedan pagados mes a mes; el lote mensual los saltará automáticamente.</div>
     <div id="rb-adel-existente" style="display:none;font-size:12px;color:#C0392B;background:rgba(192,57,43,0.06);border-radius:9px;padding:10px 12px;margin-bottom:12px;"></div>
