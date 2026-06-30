@@ -4794,7 +4794,15 @@ window.saveCargosAdmin = async function() {
     await logAuditoria('editar_cargos_admin', { uid, cargos: nuevosCargos });
     showToast('✅ Cargos actualizados','success');
     document.getElementById('modal-cargos').style.display = 'none';
-    loadAdminMembers(); loadDirectory();
+    // Refrescar vista móvil (si aplica)
+    if (typeof loadAdminMembers === 'function') loadAdminMembers();
+    if (typeof loadDirectory === 'function') loadDirectory();
+    // Refrescar tabla del panel de escritorio (si está visible)
+    const mm = (window.allMembers||[]).find(x => (x.uid||x.id) === uid);
+    if (mm) mm.cargos = nuevosCargos;
+    if (typeof dpRenderTable === 'function' && document.getElementById('desktop-panel')?.style.display !== 'none') {
+      dpRenderTable((window.allMembers||[]).filter(x => document.getElementById('dp-show-bajas')?.checked || x.estado !== 'baja'));
+    }
   } catch(e) { showToast('Error al guardar cargos','error'); }
 }
 
@@ -5532,7 +5540,10 @@ function dpRenderTable(members) {
       <td style="color:#8A9BB0;font-size:12px;">${esc(m.whatsapp)||'—'}</td>
       <td><span style="padding:3px 10px;border-radius:50px;font-size:10px;font-weight:700;background:${accessBg};color:${accessColor};">${accessLabel}</span></td>
       <td><span style="padding:3px 10px;border-radius:50px;font-size:10px;font-weight:700;background:${roleBg};color:${roleColor};">${sl}</span></td>
-      <td style="font-size:11px;color:#8A9BB0;">${m.cargos?.length>0?m.cargos.join(', '):'—'}</td>
+      <td style="font-size:11px;color:#8A9BB0;"><div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+        <span>${m.cargos?.length>0?esc(m.cargos.join(', ')):'—'}</span>
+        ${window.currentUser?.rol !== 'tesorero' ? `<button class="dp-tbl-btn" style="background:rgba(201,151,58,0.12);color:#C9973A;padding:2px 8px;font-size:10px;" title="Cambiar cargos de directiva" onclick="event.stopPropagation();editCargosAdmin('${m.uid}')">🏅 Cambiar</button>` : ''}
+      </div></td>
       <td><div style="display:flex;gap:4px;flex-wrap:wrap;" onclick="event.stopPropagation()">
         ${window.currentUser?.rol !== 'tesorero' ? `
           <button class="dp-tbl-btn" style="background:rgba(201,151,58,0.12);color:#C9973A;" onclick="dpOpenEdit('${m.uid}')">✏️ Editar</button>
@@ -15712,7 +15723,7 @@ window.finCategoriaPDF = function() {
 
 // IMPORTANTE: APP_VERSION debe coincidir con "version" en version.json y con
 // VERSION en sw.js. Bumpear las 3 juntas o el banner de update queda pegado.
-const APP_VERSION = '20260625-008';
+const APP_VERSION = '20260629-001';
 
 // Referencia al SW en espera (si existe), compartida entre ambas rutas de actualización
 window._pendingSW = null;
