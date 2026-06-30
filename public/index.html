@@ -11081,6 +11081,100 @@ window.verLectores = function(comId, titulo) {
 window._acAcreedores = [];
 window._acMovimientos = [];
 
+// Reporte imprimible de acreedores (saldos a la fecha + detalle de movimientos)
+window.acAbrirReporte = function() {
+  const acreedores = (window._acAcreedores || []).filter(a => a.activo !== false);
+  const movs = window._acMovimientos || [];
+  const rows = acreedores.map(a => {
+    const ms = movs.filter(m => m.acreedorId === a.id)
+      .sort((x,y) => String(x.fecha||'').localeCompare(String(y.fecha||'')));
+    const deuda  = ms.filter(m => m.tipo === 'deuda').reduce((s,m) => s + Number(m.monto||0), 0);
+    const pagado = ms.filter(m => m.tipo === 'pago').reduce((s,m) => s + Number(m.monto||0), 0);
+    return { nombre: a.nombre||'—', contacto: a.contacto||'', deuda, pagado, saldo: deuda - pagado, movs: ms };
+  }).sort((a,b) => b.saldo - a.saldo);
+
+  if (!rows.length) { dpShowToast('No hay acreedores para reportar','info'); return; }
+
+  const totDeuda  = rows.reduce((s,r) => s + r.deuda, 0);
+  const totPagado = rows.reduce((s,r) => s + r.pagado, 0);
+  const totSaldo  = totDeuda - totPagado;
+  const nConSaldo = rows.filter(r => r.saldo > 0.005).length;
+
+  const win = window.open('','_blank');
+  if (!win) { dpShowToast('Permite ventanas emergentes para el reporte','error'); return; }
+  const fmt = n => fmtMXN(n);
+  const hoy = new Date().toLocaleDateString('es-MX',{ day:'2-digit', month:'long', year:'numeric' });
+
+  const resumenRows = rows.map(r => `<tr${r.saldo > 0.005 ? '' : ' class="cero"'}>
+      <td>${esc(r.nombre)}${r.contacto ? `<div class="sub">${esc(r.contacto)}</div>` : ''}</td>
+      <td class="num">${fmt(r.deuda)}</td>
+      <td class="num">${fmt(r.pagado)}</td>
+      <td class="num bold">${fmt(r.saldo)}</td>
+    </tr>`).join('');
+
+  const detalle = rows.filter(r => r.movs.length).map(r => `
+    <h3>${esc(r.nombre)} <span class="saldo">Saldo: ${fmt(r.saldo)}</span></h3>
+    <table class="det"><thead><tr><th>Fecha</th><th>Concepto</th><th class="num">Deuda</th><th class="num">Pago</th></tr></thead><tbody>
+      ${r.movs.map(m => `<tr><td>${esc(m.fecha||'')}</td><td>${esc(m.concepto||m.rubroNombre||'—')}</td><td class="num">${m.tipo==='deuda'?fmt(m.monto):''}</td><td class="num">${m.tipo==='pago'?fmt(m.monto):''}</td></tr>`).join('')}
+    </tbody></table>`).join('');
+
+  const html = `<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><title>Reporte de Acreedores — Club de Leones Veracruz</title>
+  <style>
+    @page { size: letter portrait; margin: 14mm; }
+    * { box-sizing: border-box; }
+    body { font-family: 'DM Sans', Arial, sans-serif; color: #0D1B2A; font-size: 12px; line-height: 1.5; max-width: 800px; margin: auto; padding: 10px; }
+    h1 { font-family: 'Playfair Display', serif; font-size: 18px; text-align: center; margin: 0 0 2px; }
+    .sub-h { text-align: center; color: #8A9BB0; font-size: 11px; margin-bottom: 18px; }
+    .kpis { display: flex; gap: 10px; margin-bottom: 18px; }
+    .kpi { flex: 1; border: 1.5px solid #EDE8DF; border-radius: 8px; padding: 10px 12px; }
+    .kpi .v { font-family: 'Playfair Display', serif; font-size: 16px; font-weight: 800; }
+    .kpi .l { font-size: 9.5px; color: #8A9BB0; text-transform: uppercase; letter-spacing: .5px; }
+    h2 { font-size: 12.5px; font-weight: 700; background: #0D1B2A; color: #fff; padding: 6px 12px; border-radius: 5px; margin: 22px 0 8px; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    table { width: 100%; border-collapse: collapse; margin-bottom: 10px; }
+    th { background: #F5F0E8; text-align: left; padding: 6px 10px; font-size: 11px; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    td { padding: 5px 10px; border-bottom: 1px solid #eee; }
+    td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+    td.bold { font-weight: 800; }
+    .sub { font-size: 10px; color: #8A9BB0; }
+    tr.cero td { color: #9aa6b2; }
+    tr.tot td { font-weight: 800; border-top: 2px solid #0D1B2A; background: #FBF7EF; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    h3 { font-size: 12px; margin: 16px 0 5px; display: flex; justify-content: space-between; align-items: baseline; border-bottom: 1px solid #E8E0D4; padding-bottom: 3px; }
+    h3 .saldo { font-size: 11px; color: #C0392B; font-weight: 700; }
+    table.det th { background: #FAF7F1; font-size: 10px; }
+    table.det td { font-size: 11px; }
+    .acciones { text-align: center; margin: 16px 0; }
+    .acciones button { padding: 9px 20px; background: #C9973A; color: #fff; border: none; border-radius: 7px; font-size: 13px; font-weight: 700; cursor: pointer; }
+    @media print { .acciones { display: none !important; } body { padding: 0; } h3 { break-inside: avoid; } table.det { break-inside: avoid; } }
+  </style></head><body>
+    <div class="acciones"><button onclick="window.print()">🖨 Imprimir / Guardar PDF</button></div>
+    <h1>REPORTE DE ACREEDORES</h1>
+    <div class="sub-h">Club de Leones de Veracruz, A.C. &nbsp;·&nbsp; Saldos a la fecha &nbsp;·&nbsp; ${esc(hoy)}</div>
+
+    <div class="kpis">
+      <div class="kpi"><div class="v" style="color:#C0392B;">${fmt(totDeuda)}</div><div class="l">Deuda registrada</div></div>
+      <div class="kpi"><div class="v" style="color:#1A7A4A;">${fmt(totPagado)}</div><div class="l">Total pagado</div></div>
+      <div class="kpi"><div class="v" style="color:#0D1B2A;">${fmt(totSaldo)}</div><div class="l">Saldo por pagar · ${nConSaldo} acreedor${nConSaldo!==1?'es':''}</div></div>
+    </div>
+
+    <h2>Resumen por acreedor</h2>
+    <table>
+      <thead><tr><th>Acreedor</th><th class="num">Deuda</th><th class="num">Pagado</th><th class="num">Saldo</th></tr></thead>
+      <tbody>
+        ${resumenRows}
+        <tr class="tot"><td>TOTAL</td><td class="num">${fmt(totDeuda)}</td><td class="num">${fmt(totPagado)}</td><td class="num">${fmt(totSaldo)}</td></tr>
+      </tbody>
+    </table>
+
+    <h2>Detalle de movimientos por acreedor</h2>
+    ${detalle || '<p style="color:#8A9BB0;font-style:italic;">Sin movimientos registrados.</p>'}
+
+    <scr`+`ipt>setTimeout(function(){try{window.focus();}catch(e){}},150);</scr`+`ipt>
+  </body></html>`;
+
+  win.document.write(html);
+  win.document.close();
+};
+
 window.acLoad = async function() {
   try {
     const [acSnap, movSnap] = await Promise.all([
@@ -15871,7 +15965,7 @@ window.finCategoriaPDF = function() {
 
 // IMPORTANTE: APP_VERSION debe coincidir con "version" en version.json y con
 // VERSION en sw.js. Bumpear las 3 juntas o el banner de update queda pegado.
-const APP_VERSION = '20260629-006';
+const APP_VERSION = '20260630-001';
 
 // Referencia al SW en espera (si existe), compartida entre ambas rutas de actualización
 window._pendingSW = null;
@@ -19295,7 +19389,10 @@ body.damas-theme .filter-tab-active { background:rgba(139,74,107,0.15); color:#5
             <div style="font-family:'Playfair Display',serif;font-size:22px;font-weight:700;color:#0D1B2A;">Acreedores — Control de Deuda</div>
             <div style="font-size:13px;color:#8A9BB0;margin-top:2px;">Saldos por acreedor, movimientos y estadísticas de deuda.</div>
           </div>
-          <button onclick="acOpenNuevoAcreedor(null)" style="padding:9px 20px;background:linear-gradient(135deg,#E8B84B,#C9973A);color:#0D1B2A;border:none;border-radius:10px;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;cursor:pointer;">➕ Nuevo Acreedor</button>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;">
+            <button onclick="acAbrirReporte()" style="padding:9px 20px;background:#0D1B2A;color:#E8B84B;border:none;border-radius:10px;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;cursor:pointer;">📄 Imprimir reporte</button>
+            <button onclick="acOpenNuevoAcreedor(null)" style="padding:9px 20px;background:linear-gradient(135deg,#E8B84B,#C9973A);color:#0D1B2A;border:none;border-radius:10px;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;cursor:pointer;">➕ Nuevo Acreedor</button>
+          </div>
         </div>
 
         <!-- Filtros -->
