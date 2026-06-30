@@ -15150,6 +15150,140 @@ window.finMovSortReset = function() {
   finMovFilter();
 };
 
+// ── Reporte de movimientos por concepto (selección múltiple de rubros) ──
+window.finReporteAbrir = function() {
+  const b = document.getElementById('fin-rep-buscar'); if (b) b.value = '';
+  finReporteRenderLista();
+  document.getElementById('fin-reporte-modal').style.display = 'flex';
+};
+window.finReporteCerrar = function() {
+  document.getElementById('fin-reporte-modal').style.display = 'none';
+};
+// Conceptos (rubroNombre) distintos presentes en los movimientos, con su tipo, conteo y total.
+function finReporteConceptos() {
+  const tipo = document.getElementById('fin-rep-tipo')?.value || '';
+  const anio = document.getElementById('fin-rep-anio')?.value || '';
+  const map = {};
+  (window._finMovimientos || []).forEach(m => {
+    if (m.tipoEspecial === 'transferencia_interna') return;
+    if (tipo && m.tipo !== tipo) return;
+    if (anio && !String(m.fecha || '').startsWith(anio)) return;
+    const nombre = m.rubroNombre || 'Sin categoría';
+    if (!map[nombre]) map[nombre] = { nombre, tipo: m.tipo, count: 0, total: 0 };
+    map[nombre].count++; map[nombre].total += Number(m.monto || 0);
+  });
+  return Object.values(map).sort((a,b) => a.nombre.localeCompare(b.nombre, 'es'));
+}
+window.finReporteRenderLista = function() {
+  const cont = document.getElementById('fin-rep-lista');
+  if (!cont) return;
+  const q = (document.getElementById('fin-rep-buscar')?.value || '').toLowerCase().trim();
+  let list = finReporteConceptos();
+  if (q) list = list.filter(c => c.nombre.toLowerCase().includes(q));
+  if (!list.length) { cont.innerHTML = '<div style="color:#8A9BB0;font-size:12px;padding:14px;text-align:center;">Sin conceptos para estos filtros.</div>'; return; }
+  cont.innerHTML = list.map(c => {
+    const col = c.tipo === 'ingreso' ? '#1A7A4A' : '#C0392B';
+    return `<label style="display:flex;align-items:center;gap:10px;padding:7px 8px;border-radius:7px;cursor:pointer;border-bottom:1px solid #F5F0E8;">
+      <input type="checkbox" class="fin-rep-chk" value="${esc(c.nombre)}" style="width:16px;height:16px;accent-color:#0D1B2A;cursor:pointer;flex-shrink:0;">
+      <span style="width:7px;height:7px;border-radius:50%;background:${col};flex-shrink:0;"></span>
+      <span style="flex:1;font-size:13px;color:#0D1B2A;">${esc(c.nombre)}</span>
+      <span style="font-size:11px;color:#8A9BB0;white-space:nowrap;">${c.count} · ${fmtMXN(c.total)}</span>
+    </label>`;
+  }).join('');
+};
+window.finReporteSelTodos = function(v) {
+  document.querySelectorAll('.fin-rep-chk').forEach(c => c.checked = v);
+};
+window.finReporteGenerar = function() {
+  const sel = [...document.querySelectorAll('.fin-rep-chk:checked')].map(c => c.value);
+  if (!sel.length) { dpShowToast('Selecciona al menos un concepto','error'); return; }
+  const selSet = new Set(sel);
+  const tipo = document.getElementById('fin-rep-tipo')?.value || '';
+  const anio = document.getElementById('fin-rep-anio')?.value || '';
+
+  const movs = (window._finMovimientos || []).filter(m => {
+    if (m.tipoEspecial === 'transferencia_interna') return false;
+    if (tipo && m.tipo !== tipo) return false;
+    if (anio && !String(m.fecha || '').startsWith(anio)) return false;
+    return selSet.has(m.rubroNombre || 'Sin categoría');
+  });
+  if (!movs.length) { dpShowToast('No hay movimientos para esos conceptos','info'); return; }
+
+  // Agrupar por concepto (rubroNombre); cada rubro es de un solo tipo
+  const grupos = {};
+  movs.forEach(m => {
+    const k = m.rubroNombre || 'Sin categoría';
+    if (!grupos[k]) grupos[k] = [];
+    grupos[k].push(m);
+  });
+  const conceptos = Object.keys(grupos).sort((a,b) => a.localeCompare(b, 'es'));
+
+  let totalIng = 0, totalEgr = 0;
+  const win = window.open('','_blank');
+  if (!win) { dpShowToast('Permite ventanas emergentes para el reporte','error'); return; }
+  const fmt = n => fmtMXN(n);
+  const hoy = new Date().toLocaleDateString('es-MX',{ day:'2-digit', month:'long', year:'numeric' });
+  const destLbl = d => d === 'caja' ? 'Caja' : 'Banco';
+
+  const bloques = conceptos.map(k => {
+    const ms = grupos[k].slice().sort((x,y) => String(x.fecha||'').localeCompare(String(y.fecha||'')));
+    const sub = ms.reduce((s,m) => s + Number(m.monto || 0), 0);
+    const esIng = ms[0].tipo === 'ingreso';
+    if (esIng) totalIng += sub; else totalEgr += sub;
+    const filas = ms.map(m => `<tr>
+        <td>${esc(m.fecha || '')}</td>
+        <td>${esc(m.concepto || '—')}</td>
+        <td>${esc(destLbl(m.destino))}</td>
+        <td class="num">${fmt(Number(m.monto || 0))}</td>
+      </tr>`).join('');
+    return `<h2>${esc(k)} <span class="tag" style="background:${esIng?'#1A7A4A':'#C0392B'};">${esIng?'Ingreso':'Egreso'}</span></h2>
+      <table><thead><tr><th>Fecha</th><th>Descripción</th><th>Destino</th><th class="num">Monto</th></tr></thead>
+      <tbody>${filas}<tr class="tot"><td colspan="3">SUBTOTAL — ${esc(k)} (${ms.length})</td><td class="num">${fmt(sub)}</td></tr></tbody></table>`;
+  }).join('');
+
+  const tipoLbl = tipo === 'ingreso' ? 'Ingresos' : tipo === 'egreso' ? 'Egresos' : 'Ingresos y egresos';
+  const totalFinal = `<table class="grand"><tbody>
+      ${totalIng ? `<tr><td>TOTAL INGRESOS</td><td class="num" style="color:#1A7A4A;">${fmt(totalIng)}</td></tr>` : ''}
+      ${totalEgr ? `<tr><td>TOTAL EGRESOS</td><td class="num" style="color:#C0392B;">${fmt(totalEgr)}</td></tr>` : ''}
+      ${(totalIng && totalEgr) ? `<tr class="neto"><td>NETO</td><td class="num">${fmt(totalIng - totalEgr)}</td></tr>` : ''}
+    </tbody></table>`;
+
+  const html = `<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><title>Reporte por concepto — Club de Leones Veracruz</title>
+  <style>
+    @page { size: letter portrait; margin: 14mm; }
+    * { box-sizing: border-box; }
+    body { font-family: 'DM Sans', Arial, sans-serif; color: #0D1B2A; font-size: 12px; line-height: 1.5; max-width: 820px; margin: auto; padding: 10px; }
+    h1 { font-family: 'Playfair Display', serif; font-size: 18px; text-align: center; margin: 0 0 2px; }
+    .sub-h { text-align: center; color: #8A9BB0; font-size: 11px; margin-bottom: 6px; }
+    .seleccion { text-align: center; font-size: 11px; color: #5A6B7E; margin-bottom: 18px; }
+    h2 { font-size: 12.5px; font-weight: 700; background: #0D1B2A; color: #fff; padding: 6px 12px; border-radius: 5px; margin: 20px 0 8px; display: flex; justify-content: space-between; align-items: center; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    h2 .tag { font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: .5px; color: #fff; padding: 2px 8px; border-radius: 20px; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    table { width: 100%; border-collapse: collapse; margin-bottom: 10px; }
+    th { background: #F5F0E8; text-align: left; padding: 6px 10px; font-size: 11px; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    td { padding: 5px 10px; border-bottom: 1px solid #eee; font-size: 11px; }
+    td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+    tr.tot td { font-weight: 800; border-top: 2px solid #0D1B2A; background: #FBF7EF; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    .grand { max-width: 360px; margin-left: auto; margin-top: 16px; }
+    .grand td { font-weight: 800; font-size: 13px; padding: 8px 12px; border: none; border-bottom: 1px solid #E8E0D4; }
+    .grand tr.neto td { border-top: 2px solid #0D1B2A; }
+    .acciones { text-align: center; margin: 16px 0; }
+    .acciones button { padding: 9px 20px; background: #C9973A; color: #fff; border: none; border-radius: 7px; font-size: 13px; font-weight: 700; cursor: pointer; }
+    @media print { .acciones { display: none !important; } body { padding: 0; } h2, table { break-inside: avoid; } }
+  </style></head><body>
+    <div class="acciones"><button onclick="window.print()">🖨 Imprimir / Guardar PDF</button></div>
+    <h1>REPORTE POR CONCEPTO</h1>
+    <div class="sub-h">Club de Leones de Veracruz, A.C. &nbsp;·&nbsp; ${esc(tipoLbl)} &nbsp;·&nbsp; ${anio ? 'Año ' + esc(anio) : 'Todos los años'} &nbsp;·&nbsp; ${esc(hoy)}</div>
+    <div class="seleccion">Conceptos: ${esc(conceptos.join('  ·  '))}</div>
+    ${bloques}
+    ${totalFinal}
+    <scr`+`ipt>setTimeout(function(){try{window.focus();}catch(e){}},150);</scr`+`ipt>
+  </body></html>`;
+
+  win.document.write(html);
+  win.document.close();
+  finReporteCerrar();
+};
+
 function finMovRender(list) {
   const el = document.getElementById('fin-mov-tabla');
   if (!el) return;
@@ -15965,7 +16099,7 @@ window.finCategoriaPDF = function() {
 
 // IMPORTANTE: APP_VERSION debe coincidir con "version" en version.json y con
 // VERSION en sw.js. Bumpear las 3 juntas o el banner de update queda pegado.
-const APP_VERSION = '20260630-001';
+const APP_VERSION = '20260630-002';
 
 // Referencia al SW en espera (si existe), compartida entre ambas rutas de actualización
 window._pendingSW = null;
@@ -19225,7 +19359,10 @@ body.damas-theme .filter-tab-active { background:rgba(139,74,107,0.15); color:#5
             <div style="font-family:'Playfair Display',serif;font-size:22px;font-weight:700;color:#0D1B2A;">Movimientos</div>
             <div style="font-size:13px;color:#8A9BB0;margin-top:2px;">Registro de ingresos y gastos del club</div>
           </div>
-          <button onclick="finMovOpenModal()" style="padding:9px 20px;background:linear-gradient(135deg,#E8B84B,#C9973A);color:#0D1B2A;border:none;border-radius:10px;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;cursor:pointer;">➕ Nuevo Movimiento</button>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;">
+            <button onclick="finReporteAbrir()" style="padding:9px 20px;background:#0D1B2A;color:#E8B84B;border:none;border-radius:10px;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;cursor:pointer;">📄 Reporte por concepto</button>
+            <button onclick="finMovOpenModal()" style="padding:9px 20px;background:linear-gradient(135deg,#E8B84B,#C9973A);color:#0D1B2A;border:none;border-radius:10px;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;cursor:pointer;">➕ Nuevo Movimiento</button>
+          </div>
         </div>
         <!-- Filtros -->
         <div class="dp-card" style="margin-bottom:20px;">
@@ -20318,6 +20455,38 @@ body.damas-theme .filter-tab-active { background:rgba(139,74,107,0.15); color:#5
     <div style="display:flex;gap:10px;justify-content:flex-end;">
       <button onclick="impactoCancelar()" style="padding:10px 22px;background:#F5F0E8;color:#0D1B2A;border:none;border-radius:10px;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;cursor:pointer;">Cancelar</button>
       <button onclick="impactoConfirmar()" style="padding:10px 22px;background:#C0392B;color:#fff;border:none;border-radius:10px;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;cursor:pointer;">Registrar de todos modos →</button>
+    </div>
+  </div>
+</div>
+
+<!-- ════ MODAL: REPORTE DE MOVIMIENTOS POR CONCEPTO ════ -->
+<div id="fin-reporte-modal" style="display:none;position:fixed;inset:0;background:rgba(13,27,42,0.7);backdrop-filter:blur(4px);z-index:10000;align-items:center;justify-content:center;padding:24px;overflow-y:auto;" onclick="if(event.target===this)finReporteCerrar()">
+  <div style="background:#fff;border-radius:18px;width:100%;max-width:560px;box-shadow:0 24px 80px rgba(13,27,42,0.35);padding:24px 28px;max-height:90vh;overflow-y:auto;">
+    <div style="font-family:'Playfair Display',serif;font-size:20px;font-weight:700;color:#0D1B2A;margin-bottom:4px;">📄 Reporte por concepto</div>
+    <div style="font-size:12px;color:#8A9BB0;margin-bottom:16px;">Selecciona uno o varios conceptos (rubros) y genera un reporte agrupado por concepto. Ej: marca las escuelas y obtén su reporte.</div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px;">
+      <select id="fin-rep-tipo" onchange="finReporteRenderLista()" class="cd-inp" style="flex:1;min-width:150px;">
+        <option value="">Ingresos y egresos</option>
+        <option value="ingreso">Solo ingresos</option>
+        <option value="egreso">Solo egresos</option>
+      </select>
+      <select id="fin-rep-anio" onchange="finReporteRenderLista()" class="cd-inp" style="flex:1;min-width:130px;">
+        <option value="">Todos los años</option>
+        <option>2024</option><option>2025</option><option>2026</option><option>2027</option>
+      </select>
+    </div>
+    <input type="text" id="fin-rep-buscar" oninput="finReporteRenderLista()" placeholder="🔎 Buscar concepto (ej. escuela)..." class="cd-inp" style="margin-bottom:10px;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+      <span style="font-size:11px;font-weight:700;color:#8A9BB0;text-transform:uppercase;letter-spacing:.5px;">Conceptos</span>
+      <span style="display:flex;gap:6px;">
+        <button onclick="finReporteSelTodos(true)" style="padding:4px 10px;background:#F5F0E8;color:#0D1B2A;border:none;border-radius:7px;font-size:11px;font-weight:700;cursor:pointer;">Todos</button>
+        <button onclick="finReporteSelTodos(false)" style="padding:4px 10px;background:#F5F0E8;color:#0D1B2A;border:none;border-radius:7px;font-size:11px;font-weight:700;cursor:pointer;">Ninguno</button>
+      </span>
+    </div>
+    <div id="fin-rep-lista" style="max-height:300px;overflow:auto;border:1px solid #EDE8DF;border-radius:10px;padding:6px;margin-bottom:18px;"></div>
+    <div style="display:flex;justify-content:flex-end;gap:10px;">
+      <button onclick="finReporteCerrar()" style="padding:10px 20px;background:#F5F0E8;color:#0D1B2A;border:none;border-radius:10px;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;cursor:pointer;">Cancelar</button>
+      <button onclick="finReporteGenerar()" style="padding:10px 20px;background:linear-gradient(135deg,#E8B84B,#C9973A);color:#0D1B2A;border:none;border-radius:10px;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;cursor:pointer;">📄 Generar reporte</button>
     </div>
   </div>
 </div>
