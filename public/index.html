@@ -5655,20 +5655,53 @@ function dpRenderTable(members) {
         <span>${m.cargos?.length>0?esc(m.cargos.join(', ')):'—'}</span>
         ${window.currentUser?.rol !== 'tesorero' ? `<button class="dp-tbl-btn" style="background:rgba(201,151,58,0.12);color:#C9973A;padding:2px 8px;font-size:10px;" title="Cambiar cargos de directiva" onclick="event.stopPropagation();editCargosAdmin('${m.uid}')">🏅 Cambiar</button>` : ''}
       </div></td>
-      <td><div style="display:flex;gap:4px;flex-wrap:wrap;" onclick="event.stopPropagation()">
+      <td style="text-align:right;" onclick="event.stopPropagation()">
         ${window.currentUser?.rol !== 'tesorero' ? `
-          <button class="dp-tbl-btn" style="background:rgba(201,151,58,0.12);color:#C9973A;" onclick="dpOpenEdit('${m.uid}')">✏️ Editar</button>
-          ${m.rol==='pendiente'?`<button class="dp-tbl-btn" style="background:rgba(26,122,74,0.1);color:#1A7A4A;" onclick="dpAprobar('${m.uid}','${m.nombre}')">✓ Aprobar</button>`:''}
-          ${esBaja
-            ? `<button class="dp-tbl-btn" style="background:rgba(26,122,74,0.1);color:#1A7A4A;" onclick="dpReactivarSocio('${m.uid}','${jsAttrEsc((m.nombre||'')+' '+(m.apellido||''))}')">🔓 Reactivar</button>`
-            : `<button class="dp-tbl-btn" style="background:${m.activoSistema===false?'rgba(26,122,74,0.1)':'rgba(192,57,43,0.08)'};color:${m.activoSistema===false?'#1A7A4A':'#C0392B'};" onclick="dpToggleActivo('${m.uid}', ${m.activoSistema===false ? 'true' : 'false'}, '${jsAttrEsc((m.nombre||'')+' '+(m.apellido||''))}')">${m.activoSistema===false?'🔓 Activar':'⛔ Inactivar'}</button>`}
-          ${!esBaja ? `<button class="dp-tbl-btn" style="background:rgba(142,68,173,0.1);color:#8E44AD;" onclick="dpDarDeBaja('${m.uid}','${jsAttrEsc((m.nombre||'')+' '+(m.apellido||''))}')">📤 Baja</button>` : ''}
-          ${m.rol!=='pendiente' ? `<button class="dp-tbl-btn" style="background:rgba(138,155,176,0.14);color:#5A6B7E;" title="Condonar la deuda pendiente del socio" onclick="condonarDeudaSocio('${m.uid}','${jsAttrEsc((m.nombre||'')+' '+(m.apellido||''))}')">🚫 Condonar deuda</button>` : ''}
-          ${isAdminFull() ? `<button class="dp-tbl-btn" style="background:rgba(192,57,43,0.08);color:#C0392B;" title="Borrar permanente" onclick="dpBorrarPermanente('${m.uid}','${jsAttrEsc((m.nombre||'')+' '+(m.apellido||''))}')">🗑</button>` : ''}
+          <button class="dp-tbl-btn" onclick="dpToggleActions('${m.uid}',this)" style="background:#F5F0E8;color:#0D1B2A;font-weight:700;">⋯ Acciones</button>
+          <div id="dp-acts-${m.uid}" class="dp-acts-menu" style="display:none;position:fixed;z-index:9500;background:#fff;border:1px solid #EDE8DF;border-radius:11px;box-shadow:0 12px 40px rgba(13,27,42,0.18);padding:6px;min-width:185px;">
+            <button class="dp-acts-item" style="background:rgba(201,151,58,0.12);color:#C9973A;" onclick="dpCloseActsMenus();dpOpenEdit('${m.uid}')">✏️ Editar</button>
+            ${m.rol==='pendiente'?`<button class="dp-acts-item" style="background:rgba(26,122,74,0.1);color:#1A7A4A;" onclick="dpCloseActsMenus();dpAprobar('${m.uid}','${m.nombre}')">✓ Aprobar</button>`:''}
+            ${esBaja
+              ? `<button class="dp-acts-item" style="background:rgba(26,122,74,0.1);color:#1A7A4A;" onclick="dpCloseActsMenus();dpReactivarSocio('${m.uid}','${jsAttrEsc((m.nombre||'')+' '+(m.apellido||''))}')">🔓 Reactivar</button>`
+              : `<button class="dp-acts-item" style="background:${m.activoSistema===false?'rgba(26,122,74,0.1)':'rgba(192,57,43,0.08)'};color:${m.activoSistema===false?'#1A7A4A':'#C0392B'};" onclick="dpCloseActsMenus();dpToggleActivo('${m.uid}', ${m.activoSistema===false ? 'true' : 'false'}, '${jsAttrEsc((m.nombre||'')+' '+(m.apellido||''))}')">${m.activoSistema===false?'🔓 Activar':'⛔ Inactivar'}</button>`}
+            ${!esBaja ? `<button class="dp-acts-item" style="background:rgba(142,68,173,0.1);color:#8E44AD;" onclick="dpCloseActsMenus();dpDarDeBaja('${m.uid}','${jsAttrEsc((m.nombre||'')+' '+(m.apellido||''))}')">📤 Dar de baja</button>` : ''}
+            ${m.rol!=='pendiente' ? `<button class="dp-acts-item" style="background:rgba(138,155,176,0.14);color:#5A6B7E;" onclick="dpCloseActsMenus();condonarDeudaSocio('${m.uid}','${jsAttrEsc((m.nombre||'')+' '+(m.apellido||''))}')">🚫 Condonar deuda</button>` : ''}
+            ${isAdminFull() ? `<button class="dp-acts-item" style="background:rgba(192,57,43,0.08);color:#C0392B;" onclick="dpCloseActsMenus();dpBorrarPermanente('${m.uid}','${jsAttrEsc((m.nombre||'')+' '+(m.apellido||''))}')">🗑 Borrar permanente</button>` : ''}
+          </div>
         ` : `<span style="font-size:11px;color:#C0C8D8;">Solo lectura</span>`}
-      </div></td>
+      </td>
     </tr>`;
   }).join('');
+}
+
+// ── Menú colapsable de acciones por fila (directorio escritorio) ──
+window.dpCloseActsMenus = function() {
+  document.querySelectorAll('.dp-acts-menu').forEach(m => m.style.display = 'none');
+};
+window.dpToggleActions = function(uid, btn) {
+  const menu = document.getElementById('dp-acts-' + uid);
+  if (!menu) return;
+  const isOpen = menu.style.display === 'block';
+  dpCloseActsMenus();
+  if (isOpen) return;
+  menu.style.display = 'block';
+  const r = btn.getBoundingClientRect();
+  const mw = menu.offsetWidth, mh = menu.offsetHeight;
+  let left = r.right - mw; if (left < 8) left = 8;
+  let top = r.bottom + 4;
+  if (top + mh > window.innerHeight - 8) top = Math.max(8, r.top - mh - 4);
+  menu.style.left = left + 'px';
+  menu.style.top  = top + 'px';
+};
+// Cerrar menús al hacer clic afuera o al hacer scroll (registro único)
+if (!window._dpActsInit) {
+  window._dpActsInit = true;
+  document.addEventListener('click', e => {
+    const t = e.target;
+    if (t.closest && (t.closest('.dp-acts-menu') || t.closest('button')?.getAttribute('onclick')?.includes('dpToggleActions'))) return;
+    dpCloseActsMenus();
+  });
+  window.addEventListener('scroll', () => dpCloseActsMenus(), true);
 }
 
 async function dpShow(sec) {
@@ -15834,7 +15867,7 @@ window.finCategoriaPDF = function() {
 
 // IMPORTANTE: APP_VERSION debe coincidir con "version" en version.json y con
 // VERSION en sw.js. Bumpear las 3 juntas o el banner de update queda pegado.
-const APP_VERSION = '20260629-003';
+const APP_VERSION = '20260629-004';
 
 // Referencia al SW en espera (si existe), compartida entre ambas rutas de actualización
 window._pendingSW = null;
@@ -18895,6 +18928,9 @@ body.damas-theme .filter-tab-active { background:rgba(139,74,107,0.15); color:#5
 
       <!-- CAMBIO DE DIRECTIVA (acta de entrega-recepción) -->
       <style>
+        .dp-acts-item{display:block;width:100%;text-align:left;margin-bottom:4px;padding:9px 12px;border:none;border-radius:7px;font-family:'DM Sans',sans-serif;font-size:12.5px;font-weight:700;cursor:pointer;white-space:nowrap;}
+        .dp-acts-item:last-child{margin-bottom:0;}
+        .dp-acts-item:hover{filter:brightness(0.96);}
         .cd-lbl{font-size:11px;font-weight:700;color:#5A6B7E;margin-bottom:3px;}
         .cd-inp{width:100%;padding:8px 10px;border:1.5px solid #E8E0D4;border-radius:8px;font-family:'DM Sans',sans-serif;font-size:13px;color:#0D1B2A;outline:none;background:#fff;box-sizing:border-box;}
         .cd-inp:focus{border-color:#C9973A;}
