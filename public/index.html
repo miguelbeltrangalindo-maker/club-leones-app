@@ -7018,8 +7018,15 @@ window.cambioDirectivaLoad = async function(force = false) {
   const pagarCard = card('🔴 Cuentas por pagar (acreedores)',
     (d.cuentasPagar.length ? d.cuentasPagar.map(a => fila(a.nombre, a.saldo, '#C0392B')).join('') : '<div style="font-size:12px;color:#8A9BB0;padding:6px 0;">Sin deuda con acreedores.</div>') + fila('Total por pagar', d.totalPagar, '#C0392B', true));
 
+  const ingRowsScreen = d.ingItems.map(x => {
+    let h = fila(x.concepto, x.monto, '#1A7A4A');
+    if (x.concepto === 'Cuota de socios') {
+      h += `<div style="padding:4px 0 8px;"><input type="text" id="cd-nota-cuotas" value="${esc(window._cdNotaCuotas||'')}" oninput="window._cdNotaCuotas=this.value" placeholder="📝 Anotación sobre cuota de socios (opcional, sale en el acta)..." style="width:100%;padding:7px 10px;border:1.5px dashed #C9973A;border-radius:8px;font-family:'DM Sans',sans-serif;font-size:12px;color:#0D1B2A;outline:none;background:#FFFDF8;box-sizing:border-box;"></div>`;
+    }
+    return h;
+  }).join('');
   const ingCard = card('📈 Ingresos del periodo',
-    d.ingItems.map(x => fila(x.concepto, x.monto, '#1A7A4A')).join('') + fila('Total ingresos', d.totalIng, '#1A7A4A', true));
+    ingRowsScreen + fila('Total ingresos', d.totalIng, '#1A7A4A', true));
   const egrCard = card('📉 Egresos del periodo',
     d.egrItems.map(x => fila(x.concepto, x.monto, '#C0392B')).join('') + fila('Total egresos', d.totalEgr, '#C0392B', true) + fila('Resultado neto', d.netoPeriodo, d.netoPeriodo>=0?'#1A7A4A':'#C0392B', true));
 
@@ -7067,7 +7074,14 @@ window.cambioDirectivaGenerarActa = async function() {
   const dispRows = trMoney('Bancos (cuenta operativa)', d.saldoBanco) + trMoney('Caja (efectivo)', d.saldoCaja) + trMoney('TOTAL DISPONIBLE', d.disponible, {tot:true});
   const cobrarRows = trMoney('Antigüedad 0–30 días', d.aging.b0_30) + trMoney('Antigüedad 31–60 días', d.aging.b31_60) + trMoney('Antigüedad 61–90 días', d.aging.b61_90) + trMoney('Antigüedad 90+ días', d.aging.b90_mas) + trMoney(`TOTAL POR COBRAR A SOCIOS (${d.aging.nSocios})`, d.porCobrar, {tot:true});
   const pagarRows = (d.cuentasPagar.length ? d.cuentasPagar.map(a => trMoney(a.nombre, a.saldo)).join('') : '<tr><td colspan="2" class="empty">Sin deuda con acreedores.</td></tr>') + trMoney('TOTAL POR PAGAR', d.totalPagar, {tot:true});
-  const ingRows = d.ingItems.map(x => trMoney(x.concepto, x.monto)).join('') + trMoney('TOTAL INGRESOS', d.totalIng, {tot:true});
+  const notaCuotas = (window._cdNotaCuotas || '').trim();
+  const ingRows = d.ingItems.map(x => {
+    let row = trMoney(x.concepto, x.monto);
+    if (x.concepto === 'Cuota de socios' && notaCuotas) {
+      row += `<tr><td colspan="2" style="font-size:10.5px;color:#5A6B7E;font-style:italic;padding:1px 10px 6px;">📝 ${esc(notaCuotas)}</td></tr>`;
+    }
+    return row;
+  }).join('') + trMoney('TOTAL INGRESOS', d.totalIng, {tot:true});
   const egrRows = d.egrItems.map(x => trMoney(x.concepto, x.monto)).join('') + trMoney('TOTAL EGRESOS', d.totalEgr, {tot:true}) + trMoney('RESULTADO NETO DEL PERIODO', d.netoPeriodo, {tot:true});
   const evRows = d.eventos.length
     ? `<table><thead><tr><th>Evento</th><th>Salón</th><th>Fecha</th><th class="num">Cobrado</th></tr></thead><tbody>${d.eventos.map(e => `<tr><td>${esc(e.evento)}</td><td>${esc(e.salon)}</td><td>${esc(e.fecha)}</td><td class="num">${fmt(e.cobrado)}</td></tr>`).join('')}<tr class="tot"><td colspan="3">TOTAL COBRADO POR ENTREGAR</td><td class="num">${fmt(d.totalEventos)}</td></tr></tbody></table>`
@@ -16171,7 +16185,7 @@ window.finCategoriaPDF = function() {
 
 // IMPORTANTE: APP_VERSION debe coincidir con "version" en version.json y con
 // VERSION en sw.js. Bumpear las 3 juntas o el banner de update queda pegado.
-const APP_VERSION = '20260630-003';
+const APP_VERSION = '20260630-004';
 
 // Referencia al SW en espera (si existe), compartida entre ambas rutas de actualización
 window._pendingSW = null;
