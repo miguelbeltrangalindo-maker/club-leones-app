@@ -5285,7 +5285,7 @@ window.dashboardLoad = async function(force = false) {
         </div>`).join('');
     }
 
-    // Sparkline 6 meses (cobranza por cuotas)
+    // Sparkline 6 meses: suma TODOS los ingresos del mes (no solo cuotas)
     const sparkEl = document.getElementById('dash-sparkline');
     const ahora = new Date();
     const meses = [];
@@ -15723,7 +15723,7 @@ window.finCategoriaPDF = function() {
 
 // IMPORTANTE: APP_VERSION debe coincidir con "version" en version.json y con
 // VERSION en sw.js. Bumpear las 3 juntas o el banner de update queda pegado.
-const APP_VERSION = '20260629-001';
+const APP_VERSION = '20260629-002';
 
 // Referencia al SW en espera (si existe), compartida entre ambas rutas de actualización
 window._pendingSW = null;
@@ -17867,7 +17867,7 @@ body.damas-theme .filter-tab-active { background:rgba(139,74,107,0.15); color:#5
               <div id="dash-top-morosos" style="padding:8px 16px 16px;"><div style="text-align:center;padding:20px;color:#8A9BB0;font-size:12px;">Cargando...</div></div>
             </div>
             <div class="dp-card">
-              <div class="dp-card-hdr"><span class="dp-card-ttl">📈 Cobranza últimos 6 meses</span><span style="font-size:11px;color:#8A9BB0;">Ingreso por cuotas</span></div>
+              <div class="dp-card-hdr"><span class="dp-card-ttl">📈 Ingresos últimos 6 meses</span><span style="font-size:11px;color:#8A9BB0;">Todos los ingresos del mes</span></div>
               <div id="dash-sparkline" style="padding:14px 18px 18px;min-height:120px;"></div>
             </div>
           </div>
