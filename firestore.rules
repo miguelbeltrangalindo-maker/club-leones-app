@@ -245,7 +245,8 @@ service cloud.firestore {
     // Los campos son cortos por diseño; impedir que se inflen.
     function validComunicadoLectura() {
       let d = request.resource.data;
-      return fieldStrOk(d, 'comunicadoId', 100)
+      return d.keys().hasOnly(['comunicadoId','uid','nombre','rol','leido','ultimaEdicionLeida','fechaLectura'])
+          && fieldStrOk(d, 'comunicadoId', 100)
           && fieldStrOk(d, 'uid', 100)
           && fieldStrOk(d, 'nombre', 200)
           && fieldStrOk(d, 'rol', 50)
@@ -305,8 +306,12 @@ service cloud.firestore {
         'Comité de Afiliación','Comité de Fondo de Reserva'
       ];
       return d.keys().hasAll(['uid'])
+          && d.keys().hasOnly(['uid','nombre','cargo','tipo','estado','fecha'])
           && d.uid  is string && d.uid.size() > 0
           && d.uid == request.auth.uid
+          && (!('nombre' in d) || (d.nombre is string && d.nombre.size() <= 200))
+          && (!('estado' in d) || (d.estado is string && d.estado.size() <= 40))
+          && (!('fecha'  in d) || (d.fecha  is string && d.fecha.size()  <= 40))
           && (!('tipo'  in d) || (d.tipo  is string && d.tipo.size()  <= 60))
           && (!('cargo' in d) || (d.cargo is string && d.cargo in cargosOk));
     }

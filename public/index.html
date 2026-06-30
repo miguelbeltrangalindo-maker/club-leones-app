@@ -6821,8 +6821,8 @@ function estadoCuentaAbrirVentana(htmlContent, u) {
 //  distinto). Genera un acta imprimible (PDF vía window.print).
 // ══════════════════════════════════════════════════════════════
 const CD_MESES = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
-const CD_ING_ORDER = ['Rentas de salones','Depósitos al Fondo de Reserva','Cuota de socios','Cuota mutualista','Otros ingresos'];
-const CD_EGR_ORDER = ['Nómina','Impuestos','Predial','Percápita','Otros egresos'];
+const CD_ING_ORDER = ['Rentas de salones','Préstamos del Fondo de Reserva','Cuota de socios','Cuota mutualista','Otros ingresos'];
+const CD_EGR_ORDER = ['Nómina','Impuestos','Predial','Percápita','Aportaciones al Fondo de Reserva','Otros egresos'];
 
 // Clasifica un movimiento de ingreso en uno de los conceptos a desglosar.
 function cdClasifIngreso(m) {
@@ -6830,11 +6830,11 @@ function cdClasifIngreso(m) {
   if (o === 'reservacion') return 'Rentas de salones';
   if (o === 'recibo' || o === 'pago_socio') return 'Cuota de socios';
   if (o === 'mutualista') return 'Cuota mutualista';
-  if (o === 'fondo_reserva') return 'Depósitos al Fondo de Reserva';
+  if (o === 'fondo_reserva') return 'Préstamos del Fondo de Reserva';
   const t = ((m.rubroNombre || '') + ' ' + (m.concepto || '')).toLowerCase();
   if (/renta|sal[oó]n/.test(t)) return 'Rentas de salones';
   if (/mutualista/.test(t)) return 'Cuota mutualista';
-  if (/fondo de reserva|reserva/.test(t)) return 'Depósitos al Fondo de Reserva';
+  if (/fondo de reserva|reserva/.test(t)) return 'Préstamos del Fondo de Reserva';
   if (/cuota.*soc|socio/.test(t)) return 'Cuota de socios';
   return 'Otros ingresos';
 }
@@ -6845,6 +6845,7 @@ function cdClasifEgreso(m) {
   if (/perc[aá]pita|per c[aá]pita/.test(t)) return 'Percápita';
   if (/n[oó]mina|sueldo|salario|raya|aguinaldo|finiquito/.test(t)) return 'Nómina';
   if (/impuesto|isr|iva|sat|imss|infonavit|retenci[oó]n|declaraci[oó]n/.test(t)) return 'Impuestos';
+  if (m.origen === 'fondo_reserva' || /fondo de reserva/.test(t)) return 'Aportaciones al Fondo de Reserva';
   return 'Otros egresos';
 }
 
@@ -15870,7 +15871,7 @@ window.finCategoriaPDF = function() {
 
 // IMPORTANTE: APP_VERSION debe coincidir con "version" en version.json y con
 // VERSION en sw.js. Bumpear las 3 juntas o el banner de update queda pegado.
-const APP_VERSION = '20260629-005';
+const APP_VERSION = '20260629-006';
 
 // Referencia al SW en espera (si existe), compartida entre ambas rutas de actualización
 window._pendingSW = null;
@@ -20220,6 +20221,20 @@ body.damas-theme .filter-tab-active { background:rgba(139,74,107,0.15); color:#5
     <div style="display:flex;gap:10px;justify-content:flex-end;">
       <button onclick="impactoCancelar()" style="padding:10px 22px;background:#F5F0E8;color:#0D1B2A;border:none;border-radius:10px;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;cursor:pointer;">Cancelar</button>
       <button onclick="impactoConfirmar()" style="padding:10px 22px;background:#C0392B;color:#fff;border:none;border-radius:10px;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;cursor:pointer;">Registrar de todos modos →</button>
+    </div>
+  </div>
+</div>
+
+<!-- ════ MODAL: IMPRIMIR RECIBOS PENDIENTES (selección) ════ -->
+<div id="dp-modal-imprimir-sel" style="display:none;position:fixed;inset:0;background:rgba(13,27,42,0.7);backdrop-filter:blur(4px);z-index:10000;align-items:center;justify-content:center;padding:24px;overflow-y:auto;" onclick="if(event.target===this)dpImprimirSelCerrar()">
+  <div style="background:#fff;border-radius:18px;width:100%;max-width:480px;box-shadow:0 24px 80px rgba(13,27,42,0.35);padding:24px 28px;max-height:90vh;overflow-y:auto;">
+    <div style="font-family:'Playfair Display',serif;font-size:20px;font-weight:700;color:#0D1B2A;margin-bottom:4px;">🖨 Imprimir recibos pendientes</div>
+    <div style="font-size:12px;color:#8A9BB0;margin-bottom:16px;">Socio: <strong id="dp-imprimir-sel-nombre" style="color:#0D1B2A;"></strong></div>
+    <div id="dp-imprimir-sel-lista" style="margin-bottom:18px;"></div>
+    <div style="display:flex;justify-content:flex-end;gap:10px;flex-wrap:wrap;">
+      <button onclick="dpImprimirSelCerrar()" style="padding:10px 20px;background:#F5F0E8;color:#0D1B2A;border:none;border-radius:10px;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;cursor:pointer;">Cancelar</button>
+      <button onclick="dpImprimirSelConfirmar(true)" style="padding:10px 20px;background:#fff;color:#0D1B2A;border:2px solid #E8E0D4;border-radius:10px;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;cursor:pointer;">Imprimir todos</button>
+      <button onclick="dpImprimirSelConfirmar(false)" style="padding:10px 20px;background:linear-gradient(135deg,#E8B84B,#C9973A);color:#0D1B2A;border:none;border-radius:10px;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;cursor:pointer;">Imprimir seleccionados</button>
     </div>
   </div>
 </div>
