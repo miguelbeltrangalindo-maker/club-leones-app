@@ -7317,6 +7317,77 @@ window.alertasBandejaLoad = async function(force = false) {
   }).join('');
 };
 
+// Reporte imprimible de antigüedad de adeudos (cartera vencida por socio)
+window.dpAgingReporte = function() {
+  const d = window._agingData;
+  if (!d || !d.rows || !d.rows.length) { dpShowToast('Genera primero la antigüedad (o no hay adeudos)','info'); return; }
+  const rows = d.rows, tot = d.tot;
+  const win = window.open('','_blank');
+  if (!win) { dpShowToast('Permite ventanas emergentes para el reporte','error'); return; }
+  const fmt = n => fmtMXN(n);
+  const hoy = new Date().toLocaleDateString('es-MX',{ day:'2-digit', month:'long', year:'numeric' });
+  const totalGeneral = tot.b0_30 + tot.b31_60 + tot.b61_90 + tot.b90_mas;
+  const nSocios = rows.length;
+
+  const cuerpo = rows.map(r => `<tr>
+      <td>${esc(r.nombre)}${r.numeroSocio ? `<div class="sub">#${esc(r.numeroSocio)} · ${r.maxDias} días el más viejo</div>` : `<div class="sub">${r.maxDias} días el más viejo</div>`}</td>
+      <td class="num">${r.b0_30 > 0 ? fmt(r.b0_30) : '—'}</td>
+      <td class="num">${r.b31_60 > 0 ? fmt(r.b31_60) : '—'}</td>
+      <td class="num">${r.b61_90 > 0 ? fmt(r.b61_90) : '—'}</td>
+      <td class="num c">${r.b90_mas > 0 ? fmt(r.b90_mas) : '—'}</td>
+      <td class="num bold">${fmt(r.total)}</td>
+    </tr>`).join('');
+
+  const html = `<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><title>Antigüedad de Adeudos — Club de Leones Veracruz</title>
+  <style>
+    @page { size: letter landscape; margin: 12mm; }
+    * { box-sizing: border-box; }
+    body { font-family: 'DM Sans', Arial, sans-serif; color: #0D1B2A; font-size: 12px; line-height: 1.5; max-width: 1000px; margin: auto; padding: 10px; }
+    h1 { font-family: 'Playfair Display', serif; font-size: 18px; text-align: center; margin: 0 0 2px; }
+    .sub-h { text-align: center; color: #8A9BB0; font-size: 11px; margin-bottom: 18px; }
+    .kpis { display: flex; gap: 10px; margin-bottom: 18px; }
+    .kpi { flex: 1; border: 1.5px solid #EDE8DF; border-radius: 8px; padding: 10px 12px; border-left-width: 4px; }
+    .kpi .v { font-family: 'Playfair Display', serif; font-size: 16px; font-weight: 800; }
+    .kpi .l { font-size: 9.5px; color: #8A9BB0; text-transform: uppercase; letter-spacing: .5px; }
+    table { width: 100%; border-collapse: collapse; }
+    th { background: #0D1B2A; color: #fff; text-align: left; padding: 7px 10px; font-size: 11px; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    th.num { text-align: right; }
+    td { padding: 6px 10px; border-bottom: 1px solid #eee; }
+    td.num { text-align: right; font-variant-numeric: tabular-nums; }
+    td.bold { font-weight: 800; }
+    td.c { color: #C0392B; font-weight: 700; }
+    .sub { font-size: 10px; color: #8A9BB0; }
+    tr.tot td { font-weight: 800; border-top: 2px solid #0D1B2A; background: #FBF7EF; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    .acciones { text-align: center; margin: 16px 0; }
+    .acciones button { padding: 9px 20px; background: #C9973A; color: #fff; border: none; border-radius: 7px; font-size: 13px; font-weight: 700; cursor: pointer; }
+    @media print { .acciones { display: none !important; } body { padding: 0; } tr { break-inside: avoid; } }
+  </style></head><body>
+    <div class="acciones"><button onclick="window.print()">🖨 Imprimir / Guardar PDF</button></div>
+    <h1>ANTIGÜEDAD DE ADEUDOS</h1>
+    <div class="sub-h">Club de Leones de Veracruz, A.C. &nbsp;·&nbsp; Cartera vencida por socio &nbsp;·&nbsp; ${esc(hoy)}</div>
+
+    <div class="kpis">
+      <div class="kpi" style="border-left-color:#1A7A4A;"><div class="v" style="color:#1A7A4A;">${fmt(tot.b0_30)}</div><div class="l">Corriente · 0-30 días</div></div>
+      <div class="kpi" style="border-left-color:#C9973A;"><div class="v" style="color:#C9973A;">${fmt(tot.b31_60)}</div><div class="l">Atención · 31-60 días</div></div>
+      <div class="kpi" style="border-left-color:#E67E22;"><div class="v" style="color:#E67E22;">${fmt(tot.b61_90)}</div><div class="l">Riesgo · 61-90 días</div></div>
+      <div class="kpi" style="border-left-color:#C0392B;"><div class="v" style="color:#C0392B;">${fmt(tot.b90_mas)}</div><div class="l">Crítico · 90+ días</div></div>
+    </div>
+
+    <table>
+      <thead><tr><th>Socio (${nSocios})</th><th class="num">0-30 días</th><th class="num">31-60 días</th><th class="num">61-90 días</th><th class="num">90+ días</th><th class="num">Total</th></tr></thead>
+      <tbody>
+        ${cuerpo}
+        <tr class="tot"><td>TOTAL CARTERA VENCIDA</td><td class="num">${fmt(tot.b0_30)}</td><td class="num">${fmt(tot.b31_60)}</td><td class="num">${fmt(tot.b61_90)}</td><td class="num">${fmt(tot.b90_mas)}</td><td class="num">${fmt(totalGeneral)}</td></tr>
+      </tbody>
+    </table>
+
+    <scr`+`ipt>setTimeout(function(){try{window.focus();}catch(e){}},150);</scr`+`ipt>
+  </body></html>`;
+
+  win.document.write(html);
+  win.document.close();
+};
+
 window.dpAgingLoad = async function(force = false) {
   try {
     const wrap = document.getElementById('dp-aging-tabla');
@@ -7375,6 +7446,7 @@ window.dpAgingLoad = async function(force = false) {
       acc.b0_30 += r.b0_30; acc.b31_60 += r.b31_60; acc.b61_90 += r.b61_90; acc.b90_mas += r.b90_mas;
       return acc;
     }, { b0_30:0, b31_60:0, b61_90:0, b90_mas:0 });
+    window._agingData = { rows, tot };  // para el reporte imprimible
     const fmt = n => '$' + Number(n||0).toLocaleString('es-MX', { minimumFractionDigits: 2 });
     const kpis = document.getElementById('dp-aging-kpis');
     if (kpis) {
@@ -16099,7 +16171,7 @@ window.finCategoriaPDF = function() {
 
 // IMPORTANTE: APP_VERSION debe coincidir con "version" en version.json y con
 // VERSION en sw.js. Bumpear las 3 juntas o el banner de update queda pegado.
-const APP_VERSION = '20260630-002';
+const APP_VERSION = '20260630-003';
 
 // Referencia al SW en espera (si existe), compartida entre ambas rutas de actualización
 window._pendingSW = null;
@@ -19245,7 +19317,10 @@ body.damas-theme .filter-tab-active { background:rgba(139,74,107,0.15); color:#5
             <div style="font-family:'Playfair Display',serif;font-size:22px;font-weight:700;color:#0D1B2A;">Antigüedad de Adeudos</div>
             <div style="font-size:13px;color:#8A9BB0;margin-top:2px;">Cartera vencida agrupada por antigüedad. A mayor edad de la deuda, mayor riesgo de incobrable.</div>
           </div>
-          <button onclick="dpAgingLoad(true)" style="padding:8px 16px;background:linear-gradient(135deg,#E8B84B,#C9973A);color:#0D1B2A;border:none;border-radius:9px;font-family:'DM Sans',sans-serif;font-size:12px;font-weight:700;cursor:pointer;">🔄 Actualizar</button>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;">
+            <button onclick="dpAgingReporte()" style="padding:8px 16px;background:#0D1B2A;color:#E8B84B;border:none;border-radius:9px;font-family:'DM Sans',sans-serif;font-size:12px;font-weight:700;cursor:pointer;">📄 Imprimir reporte</button>
+            <button onclick="dpAgingLoad(true)" style="padding:8px 16px;background:linear-gradient(135deg,#E8B84B,#C9973A);color:#0D1B2A;border:none;border-radius:9px;font-family:'DM Sans',sans-serif;font-size:12px;font-weight:700;cursor:pointer;">🔄 Actualizar</button>
+          </div>
         </div>
         <div id="dp-aging-kpis" style="display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:24px;"></div>
         <div class="dp-card">
