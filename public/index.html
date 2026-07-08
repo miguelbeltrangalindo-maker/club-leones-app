@@ -286,6 +286,8 @@ function goTo(screenId) {
     if (btnMut) btnMut.style.display = (window.currentUser?.rol === 'mutualista') ? 'flex' : 'none';
   }
   if (screenId === 'screen-recursos') { loadGaleriaRosters(); }
+  if (screenId === 'screen-votaciones') { votLoad(); }
+  else if (typeof votCerrarDetalle === 'function') { votCerrarDetalle(); }
   if (screenId === 'screen-inicio') {
     // Asegurar visibilidad de la card mutualista en home
     const cardMut = document.getElementById('inicio-mutualista-card');
@@ -551,6 +553,7 @@ onAuthStateChanged(auth, async (user) => {
   try {
     if (!user) {
       window.currentUser = null;
+      if (window.votStopGlobal) window.votStopGlobal();
       goTo('screen-splash');
       return;
     }
@@ -592,6 +595,7 @@ onAuthStateChanged(auth, async (user) => {
     window.currentUser = userData;
     if (window.simMostrarBanner) window.simMostrarBanner();  // mostrar banner si hay simulación activa
     startCurrentUserSync(user.uid); // C2: mantener currentUser sincronizado con Firestore
+    if (window.votStartGlobal) window.votStartGlobal(); // suscripción de votaciones (badge + tiempo real)
 
     if (isPendingProfile(userData)) {
       goTo('screen-pending');
@@ -5330,6 +5334,260 @@ async function loadGaleriaRosters(){
   }catch(e){ console.warn('galeria rosters', e); }
 }
 window.loadGaleriaRosters = loadGaleriaRosters;
+
+// ═══════════════════════ VOTACIONES ═══════════════════════
+const VOT_DIRECTIVA = ['Presidente','Past Presidente','Vicepresidente','Segundo Vicepresidente','Secretario','Tesorero','Domador','Retorcedor','Vocal dos años','Vocal un año'];
+let _votListaUnsub = null, _votDetUnsub = null, _votDetVotosUnsub = null;
+let _votCache = [], _votDetData = null, _votDetVotos = [], _votMiVoto = null, _votDetId = null;
+
+function votEsLider() {
+  const u = window.currentUser; if (!u) return false;
+  if (['admin','subadmin','tesorero'].includes(u.rol)) return true;
+  const c = u.cargos || [];
+  return c.includes('Presidente') || c.includes('Secretario') || c.includes('Tesorero');
+}
+function votEsDirectiva() {
+  const c = window.currentUser?.cargos || [];
+  return c.some(x => VOT_DIRECTIVA.includes(x));
+}
+function votPuedeVerTodo() { return votEsLider() || votEsDirectiva(); }
+
+// Suscripción global (activa toda la sesión) → alimenta lista y badge
+window.votStartGlobal = function() {
+  if (!window.currentUser || window.currentUser.rol === 'pendiente') return;
+  if (_votListaUnsub) { _votListaUnsub(); _votListaUnsub = null; }
+  let qy;
+  try {
+    qy = votPuedeVerTodo()
+      ? query(collection(db,'votaciones'), orderBy('createdAt','desc'), limit(60))
+      : query(collection(db,'votaciones'), where('audiencia','==','todos'), limit(60));
+  } catch(e) { console.warn('vot query', e); return; }
+  _votListaUnsub = onSnapshot(qy, snap => {
+    _votCache = [];
+    snap.forEach(d => _votCache.push({ id:d.id, ...d.data() }));
+    _votCache.sort((a,b) => (b.createdAt?.seconds||0) - (a.createdAt?.seconds||0));
+    votRenderLista();
+    votSetBadge(_votCache.filter(v => v.estado === 'abierta').length);
+  }, err => console.error('votaciones onSnapshot:', err));
+};
+window.votStopGlobal = function() {
+  if (_votListaUnsub) { _votListaUnsub(); _votListaUnsub = null; }
+  votCerrarDetalle();
+  _votCache = []; votSetBadge(0);
+};
+function votSetBadge(n) {
+  const b = document.getElementById('votaciones-badge');
+  if (!b) return;
+  if (n > 0) { b.textContent = n; b.style.display = 'inline-block'; }
+  else b.style.display = 'none';
+}
+
+// Entrada a la pantalla de votaciones
+window.votLoad = function() {
+  const btn = document.getElementById('vot-nueva-btn');
+  if (btn) btn.style.display = votEsLider() ? 'block' : 'none';
+  if (!_votListaUnsub) votStartGlobal();
+  votRenderLista();
+};
+
+function votRenderLista() {
+  const cont = document.getElementById('vot-lista');
+  if (!cont) return;
+  if (!_votCache.length) {
+    cont.innerHTML = '<div style="text-align:center;padding:50px 20px;color:#8A9BB0;font-size:13px;">No hay votaciones por ahora.</div>';
+    return;
+  }
+  cont.innerHTML = _votCache.map(v => {
+    const abierta = v.estado === 'abierta';
+    const aud = v.audiencia === 'directiva' ? '🦁 Solo directiva' : '👥 Todos los socios';
+    let pie;
+    if (abierta) {
+      pie = '<span style="color:#1A7A4A;font-weight:700;">● Abierta</span> · toca para ' + (votEsLider() ? 'ver resultados' : 'votar');
+    } else if (v.resultado) {
+      const r = v.resultado;
+      pie = `Resultado — 🟢 ${r.favor||0} · 🔴 ${r.contra||0} · ⚪ ${r.abstencion||0}`;
+    } else {
+      pie = 'Cerrada';
+    }
+    return `<div class="vot-card" onclick="votAbrirDetalle('${v.id}')">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;margin-bottom:6px;">
+        <div class="vot-card-ttl">${esc(v.titulo||'—')}</div>
+        <span class="vot-badge ${abierta?'abierta':'cerrada'}">${abierta?'Abierta':'Cerrada'}</span>
+      </div>
+      <div style="font-size:12px;color:#8A9BB0;margin-bottom:6px;">${aud}</div>
+      <div style="font-size:12.5px;color:#5A6B80;">${pie}</div>
+    </div>`;
+  }).join('');
+}
+
+// ── Crear votación ──
+window.votAbrirNueva = function() {
+  document.getElementById('vot-nv-titulo').value = '';
+  document.getElementById('vot-nv-desc').value = '';
+  votNvSetAud('todos');
+  document.getElementById('modal-nueva-votacion').style.display = 'flex';
+};
+window.votCerrarNueva = function() { document.getElementById('modal-nueva-votacion').style.display = 'none'; };
+window.votNvSetAud = function(aud) {
+  document.getElementById('vot-nv-aud').value = aud;
+  document.getElementById('vot-nv-aud-todos').classList.toggle('vot-aud-on', aud === 'todos');
+  document.getElementById('vot-nv-aud-directiva').classList.toggle('vot-aud-on', aud === 'directiva');
+};
+window.votCrear = async function() {
+  const titulo = document.getElementById('vot-nv-titulo').value.trim();
+  const descripcion = document.getElementById('vot-nv-desc').value.trim();
+  const audiencia = document.getElementById('vot-nv-aud').value;
+  if (!titulo) { showToast('Escribe la pregunta de la votación', 'error'); return; }
+  if (!votEsLider()) { showToast('No tienes permiso', 'error'); return; }
+  const btn = document.getElementById('vot-nv-save');
+  btn.disabled = true; btn.textContent = 'Creando…';
+  try {
+    const u = window.currentUser;
+    const cargo = (u.cargos || []).find(c => ['Presidente','Secretario','Tesorero'].includes(c)) || (u.rol||'');
+    const ref = await addDoc(collection(db,'votaciones'), {
+      titulo, descripcion, audiencia, estado: 'abierta',
+      creadaPorUID: u.uid, creadaPorNombre: `${u.nombre||''} ${u.apellido||''}`.trim(), creadaPorRol: cargo,
+      createdAt: Timestamp.now(), closedAt: null
+    });
+    votCerrarNueva();
+    showToast('Votación abierta ✓', 'success');
+    votAbrirDetalle(ref.id);
+  } catch(e) {
+    console.error('votCrear', e); showToast('No se pudo crear: ' + (e.message||e), 'error');
+  } finally { btn.disabled = false; btn.textContent = 'Crear y abrir →'; }
+};
+
+// ── Detalle / votar / cerrar ──
+window.votAbrirDetalle = function(id) {
+  _votDetId = id; _votDetData = null; _votDetVotos = []; _votMiVoto = null;
+  document.getElementById('vot-det-body').innerHTML = '<div style="text-align:center;padding:40px;color:#8A9BB0;">Cargando…</div>';
+  document.getElementById('modal-votacion').style.display = 'flex';
+  if (_votDetUnsub) { _votDetUnsub(); _votDetUnsub = null; }
+  if (_votDetVotosUnsub) { _votDetVotosUnsub(); _votDetVotosUnsub = null; }
+  _votDetUnsub = onSnapshot(doc(db,'votaciones',id), ds => {
+    if (!ds.exists()) { votCerrarDetalle(); return; }
+    _votDetData = { id, ...ds.data() }; votRenderDetalle();
+  }, err => console.error('vot det', err));
+  if (votEsLider()) {
+    _votDetVotosUnsub = onSnapshot(collection(db,'votaciones',id,'votos'), vs => {
+      _votDetVotos = []; vs.forEach(x => _votDetVotos.push({ uid:x.id, ...x.data() })); votRenderDetalle();
+    }, err => console.error('vot votos', err));
+  } else {
+    _votDetVotosUnsub = onSnapshot(doc(db,'votaciones',id,'votos',window.currentUser.uid), vs => {
+      _votMiVoto = vs.exists() ? vs.data().voto : null; votRenderDetalle();
+    }, err => console.error('vot mivoto', err));
+  }
+};
+window.votCerrarDetalle = function() {
+  if (_votDetUnsub) { _votDetUnsub(); _votDetUnsub = null; }
+  if (_votDetVotosUnsub) { _votDetVotosUnsub(); _votDetVotosUnsub = null; }
+  _votDetId = null; _votDetData = null;
+  const m = document.getElementById('modal-votacion'); if (m) m.style.display = 'none';
+};
+
+const VOT_LABELS = { favor:{t:'A favor',c:'#1A7A4A'}, contra:{t:'En contra',c:'#C0392B'}, abstencion:{t:'Abstención',c:'#8A9BB0'} };
+
+// Botones de voto (verde/rojo/gris), resaltando la opción ya elegida
+function votBotonesVoto(vid, miVoto) {
+  const b = (op) => {
+    const L = VOT_LABELS[op];
+    const sel = miVoto === op ? ' sel' : (miVoto ? ' dim' : '');
+    const cls = op === 'favor' ? 'vot-btn-favor' : op === 'contra' ? 'vot-btn-contra' : 'vot-btn-abst';
+    const icon = op === 'favor' ? '👍' : op === 'contra' ? '👎' : '✋';
+    return `<button class="vot-btn-voto ${cls}${sel}" onclick="votEmitir('${vid}','${op}')"><span style="font-size:22px;">${icon}</span>${L.t}</button>`;
+  };
+  return `<div style="display:flex;gap:10px;">${b('favor')}${b('contra')}${b('abstencion')}</div>`;
+}
+
+function votRenderDetalle() {
+  const cont = document.getElementById('vot-det-body');
+  const v = _votDetData; if (!cont || !v) return;
+  const abierta = v.estado === 'abierta';
+  const aud = v.audiencia === 'directiva' ? '🦁 Solo directiva' : '👥 Todos los socios';
+  const head = `
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;">
+      <div class="modal-title" style="text-align:left;margin:0;">${esc(v.titulo||'—')}</div>
+      <button onclick="votCerrarDetalle()" style="background:none;border:none;font-size:22px;color:#8A9BB0;cursor:pointer;line-height:1;">×</button>
+    </div>
+    <div style="font-size:12px;color:#8A9BB0;margin:2px 0 10px;">${aud} · <span class="vot-badge ${abierta?'abierta':'cerrada'}">${abierta?'Abierta':'Cerrada'}</span></div>
+    ${v.descripcion ? `<div style="font-size:13.5px;color:#0D1B2A;background:#FBF8F2;border-radius:10px;padding:12px;margin-bottom:14px;">${esc(v.descripcion)}</div>` : ''}`;
+
+  if (votEsLider()) {
+    // Vista NOMINAL para líderes (en vivo)
+    let f=0,c=0,a=0;
+    _votDetVotos.forEach(x => { if(x.voto==='favor')f++; else if(x.voto==='contra')c++; else if(x.voto==='abstencion')a++; });
+    const tot = f+c+a;
+    const pct = n => tot ? Math.round(n/tot*100) : 0;
+    const bar = tot ? `<div class="vot-bar-wrap">
+        ${f?`<div style="width:${pct(f)}%;background:#1A7A4A;"></div>`:''}
+        ${c?`<div style="width:${pct(c)}%;background:#C0392B;"></div>`:''}
+        ${a?`<div style="width:${pct(a)}%;background:#8A9BB0;"></div>`:''}
+      </div>` : '';
+    const stats = `<div style="display:flex;gap:8px;text-align:center;margin:12px 0 6px;">
+        <div style="flex:1;background:rgba(26,122,74,0.08);border-radius:10px;padding:10px;"><div style="font-size:22px;font-weight:800;color:#1A7A4A;">${f}</div><div style="font-size:11px;color:#1A7A4A;">A favor</div></div>
+        <div style="flex:1;background:rgba(192,57,43,0.08);border-radius:10px;padding:10px;"><div style="font-size:22px;font-weight:800;color:#C0392B;">${c}</div><div style="font-size:11px;color:#C0392B;">En contra</div></div>
+        <div style="flex:1;background:rgba(138,155,176,0.12);border-radius:10px;padding:10px;"><div style="font-size:22px;font-weight:800;color:#5A6B80;">${a}</div><div style="font-size:11px;color:#5A6B80;">Abstención</div></div>
+      </div>`;
+    const nominal = _votDetVotos.length ? `<div style="margin-top:10px;"><div style="font-size:11px;font-weight:700;color:#8A9BB0;text-transform:uppercase;letter-spacing:1px;margin-bottom:4px;">Quién votó (${_votDetVotos.length})</div>${
+      _votDetVotos.slice().sort((x,y)=>(x.nombre||'').localeCompare(y.nombre||'')).map(x => {
+        const L = VOT_LABELS[x.voto] || {t:x.voto,c:'#8A9BB0'};
+        return `<div class="vot-nominal-row"><span>${esc(x.nombre||'Socio')}</span><span style="font-weight:700;color:${L.c};"><span class="vot-dot" style="background:${L.c};"></span>${L.t}</span></div>`;
+      }).join('')
+    }</div>` : '<div style="text-align:center;color:#8A9BB0;font-size:13px;padding:16px;">Aún nadie ha votado.</div>';
+    // Los líderes también votan
+    const miVoto = (_votDetVotos.find(x => x.uid === window.currentUser.uid) || {}).voto || null;
+    const votaje = abierta
+      ? `<div style="font-size:11px;font-weight:700;color:#8A9BB0;text-transform:uppercase;letter-spacing:1px;margin:2px 0 6px;">Tu voto</div>${votBotonesVoto(v.id, miVoto)}${miVoto?`<div style="text-align:center;margin-top:8px;font-size:12.5px;color:#1A7A4A;font-weight:700;">✓ Votaste ${VOT_LABELS[miVoto].t}. Puedes cambiarlo mientras esté abierta.</div>`:''}<div style="height:1px;background:#EDE8DF;margin:16px 0;"></div>`
+      : '';
+    const accion = abierta
+      ? `<button onclick="votCerrarVotacion('${v.id}')" style="width:100%;margin-top:16px;background:linear-gradient(135deg,#0D1B2A,#1A2E42);color:#E8B84B;border:none;border-radius:12px;padding:14px;font-family:'DM Sans',sans-serif;font-size:14px;font-weight:800;cursor:pointer;">🔒 Cerrar votación y enviar resultado</button>`
+      : `<div style="text-align:center;margin-top:14px;padding:10px;background:#FBF8F2;border-radius:10px;font-size:13px;color:#5A6B80;">Votación cerrada. El resultado se envió a los ${tot} participantes.</div>`;
+    cont.innerHTML = head + votaje + stats + bar + nominal + accion;
+    return;
+  }
+
+  // Vista SOCIO
+  if (abierta) {
+    const nota = _votMiVoto
+      ? `<div style="text-align:center;margin-top:14px;font-size:13px;color:#1A7A4A;font-weight:700;">✓ Tu voto quedó registrado (${VOT_LABELS[_votMiVoto].t}). Puedes cambiarlo mientras esté abierta.</div>`
+      : `<div style="text-align:center;margin-top:14px;font-size:12.5px;color:#8A9BB0;">Elige una opción. El resultado se te enviará al cerrar la votación.</div>`;
+    cont.innerHTML = head + `<div style="margin-top:8px;">${votBotonesVoto(v.id, _votMiVoto)}</div>` + nota;
+  } else {
+    // Cerrada: resultado secreto (solo totales)
+    const r = v.resultado;
+    if (!r) { cont.innerHTML = head + '<div style="text-align:center;padding:24px;color:#8A9BB0;">Calculando resultado…</div>'; return; }
+    const tot = r.total || (r.favor+r.contra+r.abstencion) || 0;
+    const pct = n => tot ? Math.round(n/tot*100) : 0;
+    cont.innerHTML = head + `
+      <div style="display:flex;gap:8px;text-align:center;margin:8px 0;">
+        <div style="flex:1;background:rgba(26,122,74,0.08);border-radius:10px;padding:12px;"><div style="font-size:24px;font-weight:800;color:#1A7A4A;">${r.favor||0}</div><div style="font-size:11px;color:#1A7A4A;">A favor (${pct(r.favor||0)}%)</div></div>
+        <div style="flex:1;background:rgba(192,57,43,0.08);border-radius:10px;padding:12px;"><div style="font-size:24px;font-weight:800;color:#C0392B;">${r.contra||0}</div><div style="font-size:11px;color:#C0392B;">En contra (${pct(r.contra||0)}%)</div></div>
+        <div style="flex:1;background:rgba(138,155,176,0.12);border-radius:10px;padding:12px;"><div style="font-size:24px;font-weight:800;color:#5A6B80;">${r.abstencion||0}</div><div style="font-size:11px;color:#5A6B80;">Abstención (${pct(r.abstencion||0)}%)</div></div>
+      </div>
+      <div style="text-align:center;font-size:12px;color:#8A9BB0;margin-top:4px;">${tot} voto${tot!==1?'s':''} en total${_votMiVoto?` · Tu voto: <b style="color:${VOT_LABELS[_votMiVoto].c};">${VOT_LABELS[_votMiVoto].t}</b>`:''}</div>`;
+  }
+}
+
+window.votEmitir = async function(id, opcion) {
+  try {
+    const u = window.currentUser;
+    await setDoc(doc(db,'votaciones',id,'votos',u.uid), {
+      voto: opcion,
+      nombre: `${u.nombre||''} ${u.apellido||''}`.trim(),
+      numeroSocio: u.numeroSocio || '',
+      ts: Timestamp.now()
+    }, { merge: true });
+    showToast('Voto registrado ✓', 'success');
+  } catch(e) { console.error('votEmitir', e); showToast('No se pudo votar: ' + (e.message||e), 'error'); }
+};
+
+window.votCerrarVotacion = async function(id) {
+  if (!confirm('¿Cerrar la votación? Ya no se podrán emitir ni cambiar votos, y se enviará el resultado a los participantes.')) return;
+  try {
+    await updateDoc(doc(db,'votaciones',id), { estado: 'cerrada', closedAt: Timestamp.now() });
+    showToast('Votación cerrada', 'success');
+  } catch(e) { console.error('votCerrarVotacion', e); showToast('No se pudo cerrar: ' + (e.message||e), 'error'); }
+};
 
 // ── Panel de administración ──
 async function galeriaRenderAdmin(){
@@ -17728,7 +17986,7 @@ window.finCategoriaPDF = function() {
 
 // IMPORTANTE: APP_VERSION debe coincidir con "version" en version.json y con
 // VERSION en sw.js. Bumpear las 3 juntas o el banner de update queda pegado.
-const APP_VERSION = '20260708-009';
+const APP_VERSION = '20260708-011';
 
 // Referencia al SW en espera (si existe), compartida entre ambas rutas de actualización
 window._pendingSW = null;
@@ -18012,6 +18270,23 @@ body.modal-open { overflow:hidden; }
 .recursos-header p { color:var(--text-muted); font-size:12px; }
 .recursos-body { flex:1; overflow-y:auto; padding:14px 16px 90px; scrollbar-width:none; }
 .recursos-body::-webkit-scrollbar { display:none; }
+/* Votaciones */
+.vot-aud-btn { flex:1; padding:12px 8px; border:2px solid #E8E0D4; border-radius:12px; background:#fff; font-family:'DM Sans',sans-serif; font-size:12.5px; font-weight:700; color:#8A9BB0; cursor:pointer; transition:all .15s; }
+.vot-aud-btn.vot-aud-on { border-color:#0D1B2A; background:rgba(13,27,42,0.05); color:#0D1B2A; }
+.vot-card { background:#fff; border:1px solid #EDE8DF; border-radius:16px; padding:16px; margin-bottom:12px; cursor:pointer; box-shadow:0 2px 8px rgba(13,27,42,0.04); }
+.vot-card-ttl { font-family:'Playfair Display',serif; font-size:16px; font-weight:700; color:#0D1B2A; line-height:1.3; }
+.vot-badge { display:inline-block; font-size:10px; font-weight:800; text-transform:uppercase; letter-spacing:.5px; padding:3px 9px; border-radius:20px; }
+.vot-badge.abierta { background:rgba(26,122,74,0.12); color:#1A7A4A; }
+.vot-badge.cerrada { background:rgba(138,155,176,0.15); color:#5A6B80; }
+.vot-btn-voto { flex:1; padding:16px 8px; border:none; border-radius:14px; font-family:'DM Sans',sans-serif; font-size:14px; font-weight:800; color:#fff; cursor:pointer; display:flex; flex-direction:column; align-items:center; gap:4px; }
+.vot-btn-favor { background:linear-gradient(135deg,#1A7A4A,#15623C); }
+.vot-btn-contra { background:linear-gradient(135deg,#C0392B,#9B2D22); }
+.vot-btn-abst { background:linear-gradient(135deg,#8A9BB0,#6A798C); }
+.vot-btn-voto.sel { outline:3px solid #E8B84B; outline-offset:2px; }
+.vot-btn-voto.dim { opacity:.45; }
+.vot-bar-wrap { display:flex; height:26px; border-radius:8px; overflow:hidden; background:#F0EBE0; margin:4px 0; }
+.vot-nominal-row { display:flex; align-items:center; justify-content:space-between; padding:8px 4px; border-bottom:1px solid #F5F0E8; font-size:13px; }
+.vot-dot { width:9px; height:9px; border-radius:50%; display:inline-block; margin-right:7px; }
 .store-card { background:linear-gradient(135deg, var(--navy-mid), #0F2537); border-radius:16px; padding:18px; margin-bottom:14px; border:1px solid rgba(201,151,58,0.3); box-shadow:0 4px 20px rgba(13,27,42,0.15); display:flex; align-items:center; gap:14px; cursor:pointer; text-decoration:none; }
 .store-icon { width:52px; height:52px; background:linear-gradient(135deg,var(--gold-light),var(--gold)); border-radius:14px; display:flex; align-items:center; justify-content:center; font-size:26px; flex-shrink:0; }
 .store-info { flex:1; }
@@ -19207,6 +19482,18 @@ body.damas-theme .filter-tab-active { background:rgba(139,74,107,0.15); color:#5
         <div style="color:var(--gold-light);font-size:20px;">›</div>
       </button>
     </div>
+    <div class="recursos-section-label">Juntas</div>
+    <div style="margin-bottom:14px;">
+      <button onclick="goTo('screen-votaciones')" style="width:100%;background:linear-gradient(135deg,#0D1B2A,#1A2E42);border-radius:16px;padding:18px;border:1px solid rgba(201,151,58,0.3);display:flex;align-items:center;gap:14px;cursor:pointer;text-align:left;">
+        <div style="width:52px;height:52px;background:linear-gradient(135deg,var(--gold-light),var(--gold));border-radius:14px;display:flex;align-items:center;justify-content:center;font-size:26px;flex-shrink:0;">🗳️</div>
+        <div style="flex:1;">
+          <div style="font-family:'Playfair Display',serif;color:var(--white);font-size:16px;font-weight:700;margin-bottom:2px;">Votaciones</div>
+          <div style="color:rgba(255,255,255,0.5);font-size:12px;">Vota en las juntas y consulta resultados</div>
+        </div>
+        <div id="votaciones-badge" style="display:none;background:#C0392B;color:#fff;font-size:11px;font-weight:800;border-radius:20px;padding:3px 9px;margin-right:4px;"></div>
+        <div style="color:var(--gold-light);font-size:20px;">›</div>
+      </button>
+    </div>
     <div class="recursos-section-label">Tienda Oficial</div>
     <a class="store-card" href="https://lionsclubsinternational.myshopify.com/" target="_blank" rel="noopener">
       <div class="store-icon">🛒</div>
@@ -19499,6 +19786,56 @@ body.damas-theme .filter-tab-active { background:rgba(139,74,107,0.15); color:#5
           </div>
         </div>
       </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══ PANTALLA VOTACIONES ══ -->
+<div id="screen-votaciones" class="screen">
+  <div class="status-bar dark"></div>
+  <div class="recursos-header">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
+      <button class="btn-inicio" onclick="goTo('screen-recursos')">‹ Recursos</button>
+    </div>
+    <h1>🗳️ Votaciones</h1>
+    <p>Vota en las juntas del club</p>
+  </div>
+  <div class="recursos-body">
+    <button id="vot-nueva-btn" onclick="votAbrirNueva()" style="display:none;width:100%;background:linear-gradient(135deg,var(--gold-light),var(--gold));border:none;border-radius:14px;padding:14px;font-family:'DM Sans',sans-serif;font-size:14px;font-weight:800;color:#0D1B2A;cursor:pointer;margin-bottom:16px;">＋ Nueva votación</button>
+    <div id="vot-lista">
+      <div style="text-align:center;padding:50px 20px;color:#8A9BB0;font-size:13px;">Cargando votaciones…</div>
+    </div>
+  </div>
+</div>
+
+<!-- ══ MODAL NUEVA VOTACIÓN ══ -->
+<div id="modal-nueva-votacion" class="modal-overlay" onclick="if(event.target===this)votCerrarNueva()" style="z-index:10050;align-items:center;">
+  <div class="modal-sheet">
+    <div class="modal-handle"></div>
+    <div class="modal-title">🗳️ Nueva votación</div>
+    <label class="form-label">Título / pregunta</label>
+    <input id="vot-nv-titulo" class="form-input" maxlength="180" placeholder="Ej. ¿Se aprueba el presupuesto anual?">
+    <label class="form-label" style="margin-top:12px;">Descripción (opcional)</label>
+    <textarea id="vot-nv-desc" class="form-input" rows="3" maxlength="500" placeholder="Detalle o contexto de la votación"></textarea>
+    <label class="form-label" style="margin-top:12px;">¿Quién puede votar?</label>
+    <div style="display:flex;gap:10px;margin-top:4px;">
+      <button type="button" id="vot-nv-aud-todos" onclick="votNvSetAud('todos')" class="vot-aud-btn vot-aud-on">👥 Todos los socios</button>
+      <button type="button" id="vot-nv-aud-directiva" onclick="votNvSetAud('directiva')" class="vot-aud-btn">🦁 Solo directiva</button>
+    </div>
+    <input type="hidden" id="vot-nv-aud" value="todos">
+    <div style="display:flex;gap:10px;margin-top:20px;">
+      <button class="modal-btn-cancel" onclick="votCerrarNueva()">Cancelar</button>
+      <button id="vot-nv-save" class="modal-btn-save" onclick="votCrear()">Crear y abrir →</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══ MODAL DETALLE DE VOTACIÓN ══ -->
+<div id="modal-votacion" class="modal-overlay" onclick="if(event.target===this)votCerrarDetalle()" style="z-index:10051;align-items:center;">
+  <div class="modal-sheet">
+    <div class="modal-handle"></div>
+    <div id="vot-det-body">
+      <div style="text-align:center;padding:40px;color:#8A9BB0;">Cargando…</div>
     </div>
   </div>
 </div>

@@ -185,6 +185,54 @@ exports.notificarNuevoComunicado = onDocumentCreated(
   }
 );
 
+// ── TRIGGER: Resultado de votación (al cerrarse) ──────────────────────────────
+// Cuando una votación pasa de 'abierta' a 'cerrada', se cuentan los votos, se guarda
+// el resultado agregado en el doc (para que los socios lo vean, secreto) y se envía
+// el resultado por push a quienes participaron.
+exports.notificarResultadoVotacion = onDocumentUpdated(
+  'votaciones/{vid}',
+  async (event) => {
+    const before = event.data?.before?.data();
+    const after  = event.data?.after?.data();
+    if (!before || !after) return;
+    // Solo en la transición abierta → cerrada (evita re-disparos por el merge del resultado)
+    if (before.estado === 'cerrada' || after.estado !== 'cerrada') return;
+
+    const vid = event.params.vid;
+    console.log('🗳️ notificarResultadoVotacion — cerrando:', vid);
+    const votosSnap = await db.collection('votaciones').doc(vid).collection('votos').get();
+    let favor = 0, contra = 0, abstencion = 0;
+    const uids = [];
+    votosSnap.forEach(v => {
+      const d = v.data();
+      if (d.voto === 'favor') favor++;
+      else if (d.voto === 'contra') contra++;
+      else if (d.voto === 'abstencion') abstencion++;
+      uids.push(v.id);
+    });
+    const total = favor + contra + abstencion;
+
+    // Guardar resultado agregado en el doc (los socios solo ven estos números)
+    try {
+      await event.data.after.ref.set({ resultado: { favor, contra, abstencion, total } }, { merge: true });
+    } catch (e) { console.error('No se pudo guardar resultado:', e.message); }
+
+    // Push a los participantes
+    const tokens = [];
+    for (const uid of uids) {
+      try {
+        const u = await db.collection('usuarios').doc(uid).get();
+        const t = u.data()?.fcmToken;
+        if (t) tokens.push(t);
+      } catch (e) { /* ignora usuario sin doc */ }
+    }
+    const title = `🗳️ Resultado: ${after.titulo || 'Votación'}`;
+    const body  = `A favor: ${favor} · En contra: ${contra} · Abstención: ${abstencion} (de ${total})`;
+    console.log(`📤 notificarResultadoVotacion — participantes: ${uids.length}, tokens: ${tokens.length}`);
+    await sendMulticast(tokens, title, body);
+  }
+);
+
 // ── TRIGGER 2: Socio aprobado ─────────────────────────────────────────────────
 exports.notificarSocioAprobado = onDocumentUpdated(
   'usuarios/{uid}',

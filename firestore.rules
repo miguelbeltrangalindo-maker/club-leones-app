@@ -101,6 +101,23 @@ service cloud.firestore {
       return isMember() && getEffectiveRol() != 'pendiente';
     }
 
+    // ── Votaciones ────────────────────────────────────────────────────────────
+    // Líder que puede crear/cerrar votaciones: cargo Presidente/Secretario/Tesorero
+    // o rol de sistema admin/subadmin/tesorero.
+    function esLiderVotacion() {
+      return isAdminOrSub() || isTesorero() ||
+        (isMember() && currentUserDoc().cargos is list &&
+         currentUserDoc().cargos.hasAny(['Presidente','Secretario','Tesorero']));
+    }
+    // Miembro de la directiva (puede votar en votaciones de audiencia 'directiva').
+    function esDirectivaVotante() {
+      return isMember() && currentUserDoc().cargos is list &&
+        currentUserDoc().cargos.hasAny(['Presidente','Past Presidente','Vicepresidente','Segundo Vicepresidente','Secretario','Tesorero','Domador','Retorcedor','Vocal dos años','Vocal un año']);
+    }
+    function votacionData(vid) {
+      return get(/databases/$(database)/documents/votaciones/$(vid)).data;
+    }
+
     // ── Validación de campos editables por el propio usuario ──────────────────
 
     function selfEditableUserFieldsOnly() {
@@ -667,6 +684,35 @@ service cloud.firestore {
       allow read: if isApprovedMember();
       allow create, update: if isAdminOrSub() && validGaleria();
       allow delete: if isAdminOrSub();
+    }
+
+    // ── Votaciones de las juntas ─────────────────────────────────────────────
+    // Doc: titulo, descripcion, audiencia('todos'|'directiva'), estado('abierta'|'cerrada'),
+    // creadaPor*, createdAt, closedAt, resultado{favor,contra,abstencion,total} (lo escribe la CF).
+    match /votaciones/{vid} {
+      // Lectura: líderes ven todo; el resto solo si es del público objetivo.
+      allow read: if isApprovedMember() &&
+        (esLiderVotacion() || resource.data.audiencia == 'todos' || esDirectivaVotante());
+      allow create: if esLiderVotacion()
+        && request.resource.data.titulo is string
+        && request.resource.data.titulo.size() > 0
+        && request.resource.data.titulo.size() < 200
+        && request.resource.data.audiencia in ['todos','directiva']
+        && request.resource.data.estado == 'abierta';
+      // Solo líderes cierran/editan/borran.
+      allow update: if esLiderVotacion();
+      allow delete: if esLiderVotacion();
+
+      // Votos: un documento por socio (id = uid). Los líderes ven todos (nominal);
+      // el socio solo su propio voto (el resultado agregado lo lee del doc padre).
+      match /votos/{uid} {
+        allow read: if esLiderVotacion() || isSelf(uid);
+        allow create, update: if isSelf(uid)
+          && votacionData(vid).estado == 'abierta'
+          && (votacionData(vid).audiencia == 'todos' || esDirectivaVotante() || esLiderVotacion())
+          && request.resource.data.voto in ['favor','contra','abstencion'];
+        allow delete: if isSelf(uid) && votacionData(vid).estado == 'abierta';
+      }
     }
 
     // Catch-all: bloquea cualquier colección no declarada explícitamente

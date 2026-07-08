@@ -17,6 +17,7 @@ PWA completa del Club de Leones Veracruz A.C., accesible en https://app-club-de-
 - `notificarSolicitudCargo`
 - `notificarPagoMutualista`
 - `notificarAdeudoManual`
+- `notificarResultadoVotacion`
 
 ## Roles del sistema
 `admin`, `subadmin`, `Presidente`, `Secretario`, `Tesorero`, `Cantinero`, `Mutualista`, `Socio`, `Dama León`, `Viuda`, `Cooperadora`, `Empleado`
