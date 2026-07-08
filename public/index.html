@@ -32,6 +32,14 @@ import { getFunctions, httpsCallable }
 const CLOUD = 'dgfkkwypy';
 const PRESET = 'club-leones';
 
+// Datos bancarios del club para pagos por transferencia (comprobante desde la app)
+const CLUB_BANCO = {
+  banco:   'Santander',
+  titular: 'Club de Leones de Veracruz AC',
+  cuenta:  '65510263999',
+  clabe:   '014905655102639996',
+};
+
 const firebaseConfig = {
   apiKey: "AIzaSyDzuknHkLef6Vd_BuXhE_vvypgyl0cgAsQ",
   authDomain: "app-club-de-leones.firebaseapp.com",
@@ -277,6 +285,7 @@ function goTo(screenId) {
     const btnMut = document.getElementById('btn-mutualista-recursos');
     if (btnMut) btnMut.style.display = (window.currentUser?.rol === 'mutualista') ? 'flex' : 'none';
   }
+  if (screenId === 'screen-recursos') { loadGaleriaRosters(); }
   if (screenId === 'screen-inicio') {
     // Asegurar visibilidad de la card mutualista en home
     const cardMut = document.getElementById('inicio-mutualista-card');
@@ -311,6 +320,64 @@ function showToast(msg, type = 'info') {
   t.className = 'toast show ' + type;
   setTimeout(() => t.className = 'toast', 2800);
 }
+
+// Copiar texto al portapapeles (con fallback para navegadores/WebViews sin Clipboard API)
+window.copiarAlPortapapeles = async function(texto, label) {
+  const done = () => showToast((label ? label + ' copiado' : 'Copiado') + ' ✅', 'success');
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(String(texto));
+      done();
+      return;
+    }
+  } catch (_) { /* cae al fallback */ }
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = String(texto);
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.top = '-9999px';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    ta.setSelectionRange(0, ta.value.length);
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+    done();
+  } catch (_) {
+    showToast('No se pudo copiar automáticamente', 'error');
+  }
+};
+
+// ── Caja flotante "Cuenta del Club": datos bancarios copiables con un toque ──
+function _bancoCopyRow(label, valor) {
+  return `<div onclick="copiarAlPortapapeles('${jsAttrEsc(valor)}','${jsAttrEsc(label)}')"
+       style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:13px 15px;background:#fff;border:2px solid #E8E0D4;border-radius:12px;margin-bottom:10px;cursor:pointer;-webkit-tap-highlight-color:transparent;"
+       onmousedown="this.style.background='#FBF7EF'" onmouseup="this.style.background='#fff'" ontouchstart="this.style.background='#FBF7EF'" ontouchend="this.style.background='#fff'">
+      <div style="min-width:0;">
+        <div style="font-size:10px;font-weight:700;color:#8A9BB0;letter-spacing:.5px;text-transform:uppercase;">${label}</div>
+        <div style="font-size:17px;font-weight:800;color:#0D1B2A;letter-spacing:.5px;font-variant-numeric:tabular-nums;word-break:break-all;">${esc(valor)}</div>
+      </div>
+      <div style="flex-shrink:0;display:flex;align-items:center;gap:5px;color:#C9973A;font-size:13px;font-weight:800;"><span style="font-size:18px;">📋</span> Copiar</div>
+    </div>`;
+}
+window.abrirDatosBanco = function() {
+  const body = document.getElementById('datos-banco-body');
+  if (body) body.innerHTML = `
+    <div style="background:linear-gradient(135deg,#0D1B2A,#1A2E42);border-radius:14px;padding:14px 15px;margin-bottom:14px;">
+      <div style="font-size:13px;font-weight:800;color:#fff;">🏦 ${CLUB_BANCO.banco}</div>
+      <div style="font-size:12px;color:rgba(255,255,255,0.6);">${esc(CLUB_BANCO.titular)}</div>
+    </div>
+    ${_bancoCopyRow('No. de cuenta', CLUB_BANCO.cuenta)}
+    ${_bancoCopyRow('CLABE interbancaria', CLUB_BANCO.clabe)}
+    <div style="text-align:center;font-size:11.5px;color:#8A9BB0;margin-top:4px;">👆 Toca cualquiera de los datos para copiarlo</div>`;
+  const m = document.getElementById('datos-banco-modal');
+  if (m) m.style.display = 'flex';
+};
+window.cerrarDatosBanco = function() {
+  const m = document.getElementById('datos-banco-modal');
+  if (m) m.style.display = 'none';
+};
 
 // ── ROUTER: detecta rol + dispositivo ──
 function isMobileDevice() {
@@ -590,9 +657,11 @@ function updateNavUI(userData) {
   document.getElementById('myprofile-email').textContent = userData.correo || '---';
   // Dashboard: mostrar Mi Recibo a socios y viudas (que pagan mutualista)
   const _mrc = document.getElementById('inicio-mi-recibo-card');
+  const _ccc = document.getElementById('inicio-cuenta-card');
   const _wxc = document.getElementById('inicio-weather-card');
   if (userData.tipo === 'socio' || userData.tipo === 'viuda') {
     if (_mrc) _mrc.style.display = 'flex';
+    if (_ccc) _ccc.style.display = 'flex';
     if (_wxc) _wxc.style.display = 'none';
     document.getElementById('myprofile-ingreso').textContent = userData.fechaIngreso || '---';
     document.getElementById('myprofile-conyuge').textContent = userData.conyuge || '---';
@@ -601,6 +670,7 @@ function updateNavUI(userData) {
     loadMisRecibos();
   } else {
     if (_mrc) _mrc.style.display = 'none';
+    if (_ccc) _ccc.style.display = 'none';
     if (_wxc) { _wxc.style.display = 'flex'; loadWeather(); }
   }
   if (userData.tipo === 'dama' || userData.tipo === 'viuda' || userData.tipo === 'cooperadora') {
@@ -1858,23 +1928,12 @@ window.offlineActivarCuenta = async function() {
     });
     await setDoc(doc(db, 'roles', newUid), { rol: oldData.rol || 'miembro', activo: true, uid: newUid });
 
-    // Marcar el doc offline como migrado
-    await updateDoc(doc(db, 'usuarios', uid), { migradoA: newUid, offline: false, activo: false });
+    // Consolidar: reasigna recibos + comprobantes, hereda datos y retira la
+    // cuenta offline (mismo helper que usa la aprobación de auto-registro).
+    const consol = await consolidarCuentaOffline(uid, newUid);
 
-    // Migrar recibos: actualizar socioUID
-    const recSnap = await getDocs(collection(db, 'recibos'));
-    const batch_updates = [];
-    recSnap.forEach(d => {
-      if (d.data().socioUID === uid) batch_updates.push(d.id);
-    });
-    for (const rid of batch_updates) {
-      // migracionDesde es marcador exigido por la regla de inmutabilidad
-      // para permitir el cambio de socioUID solo en este flujo de activación.
-      await updateDoc(doc(db, 'recibos', rid), { socioUID: newUid, migracionDesde: uid });
-    }
-
-    await logAuditoria('activar_cuenta_offline', { oldUid: uid, newUid, correo, recibosActualizados: batch_updates.length });
-    showToast(`✅ Cuenta activada. ${batch_updates.length} recibos vinculados al nuevo usuario`, 'success');
+    await logAuditoria('activar_cuenta_offline', { oldUid: uid, newUid, correo, recibosActualizados: consol.recibos, pagos: consol.pagos });
+    showToast(`✅ Cuenta activada. ${consol.recibos} recibos vinculados al nuevo usuario`, 'success');
     document.getElementById('dp-modal-activar-offline').style.display = 'none';
     await offlineLoad();
   } catch(e) {
@@ -2437,7 +2496,7 @@ async function _loadSociosBotana() {
 async function renderBotanaScreen() {
   const u = window.currentUser;
   if (!u || u.tipo !== 'socio') return;
-  const esCantinero = u.rol === 'cantinero';
+  const esCantinero = u.rol === 'cantinero' || u.rol === 'tesorero';
   const adminZone = document.getElementById('botana-admin-zone');
   if (adminZone) adminZone.style.display = esCantinero ? 'block' : 'none';
   await loadBotanas();
@@ -2498,7 +2557,7 @@ function _renderBotanaForm(editData) {
 function _renderBotanaLista() {
   const wrap = document.getElementById('botana-lista-wrap');
   if (!wrap) return;
-  const esCantinero = window.currentUser?.rol === 'cantinero';
+  const esCantinero = ['cantinero','tesorero'].includes(window.currentUser?.rol);
   if (!_botanasList.length) {
     wrap.innerHTML = `<div style="text-align:center;padding:48px 20px;">
       <div style="font-size:54px;margin-bottom:14px;">🍺</div>
@@ -2590,7 +2649,7 @@ window.botanaConfirmar = async function(id) {
 
 window.saveBotana = async function() {
   const u = window.currentUser;
-  if (!u || u.rol !== 'cantinero') { showToast('Sin permiso', 'error'); return; }
+  if (!u || !['cantinero','tesorero'].includes(u.rol)) { showToast('Sin permiso', 'error'); return; }
   const selFecha = document.getElementById('botana-sel-fecha');
   const selSocio = document.getElementById('botana-sel-socio');
   const dateStr  = selFecha?.value;
@@ -2640,7 +2699,7 @@ window.botanaCancelEdit = function() {
 
 window.botanaDelete = async function(id) {
   const u = window.currentUser;
-  if (!u || u.rol !== 'cantinero') return;
+  if (!u || !['cantinero','tesorero'].includes(u.rol)) return;
   const b = _botanasList.find(x => x.id === id);
   if (!b) return;
   if (!confirm(`¿Eliminar la asignación de ${b.socioNombre} para el ${_fmtFechaBotana(b.fecha.toDate())}?`)) return;
@@ -3324,9 +3383,10 @@ function _renderMisRecibos(recs) {
   const pagado = ult.estado === 'pagado';
   const ultParcial = ult.estado === 'parcial';
   const ultCondonado = (ult.estado||'').toLowerCase() === 'condonado';
-  const ultBadgeBg = pagado ? 'rgba(26,122,74,0.1)' : ultParcial ? 'rgba(142,68,173,0.12)' : ultCondonado ? 'rgba(138,155,176,0.14)' : 'rgba(230,126,34,0.12)';
-  const ultBadgeColor = pagado ? '#1A7A4A' : ultParcial ? '#8E44AD' : ultCondonado ? '#8A9BB0' : '#E67E22';
-  const ultBadgeLabel = pagado ? (ult.pagoAdelantado ? '✅ Pagado por adelantado' : '✅ Pagado') : ultParcial ? '🟣 Parcial' : ultCondonado ? '🚫 Condonado' : '⏳ Pendiente';
+  const ultEnRevision = !pagado && !ultCondonado && ult.revisionPago && ult.revisionPago.estado === 'pendiente_revision';
+  const ultBadgeBg = ultEnRevision ? 'rgba(41,128,185,0.12)' : pagado ? 'rgba(26,122,74,0.1)' : ultParcial ? 'rgba(142,68,173,0.12)' : ultCondonado ? 'rgba(138,155,176,0.14)' : 'rgba(230,126,34,0.12)';
+  const ultBadgeColor = ultEnRevision ? '#2980B9' : pagado ? '#1A7A4A' : ultParcial ? '#8E44AD' : ultCondonado ? '#8A9BB0' : '#E67E22';
+  const ultBadgeLabel = ultEnRevision ? '🔵 Pendiente de revisión' : pagado ? '✅ Pagado' : ultParcial ? '🟣 Parcial' : ultCondonado ? '🚫 Condonado' : '⏳ Pendiente';
   const conceptos = [
     {l:'① Cuota mensual',v:ult.c1},{l:'② Internacionales',v:ult.c2},{l:'③ Percápita',v:ult.c3},
     {l:'④ Baile de Coronación',v:ult.c4},{l:'⑤ Navidad Escuela Club',v:ult.c5},
@@ -3363,9 +3423,10 @@ function _renderMisRecibos(recs) {
         const pg=r.estado==='pagado';
         const pc=r.estado==='parcial';
         const cd=(r.estado||'').toLowerCase()==='condonado';
-        const bg=pg?'rgba(26,122,74,0.1)':pc?'rgba(142,68,173,0.12)':cd?'rgba(138,155,176,0.14)':'rgba(230,126,34,0.12)';
-        const cl=pg?'#1A7A4A':pc?'#8E44AD':cd?'#8A9BB0':'#E67E22';
-        const lb=pg?(r.pagoAdelantado?'✅ Adelantado':'✅ Pagado'):pc?'🟣 Parcial':cd?'🚫 Condonado':'⏳ Pendiente';
+        const rv=!pg&&!cd&&r.revisionPago&&r.revisionPago.estado==='pendiente_revision';
+        const bg=rv?'rgba(41,128,185,0.12)':pg?'rgba(26,122,74,0.1)':pc?'rgba(142,68,173,0.12)':cd?'rgba(138,155,176,0.14)':'rgba(230,126,34,0.12)';
+        const cl=rv?'#2980B9':pg?'#1A7A4A':pc?'#8E44AD':cd?'#8A9BB0':'#E67E22';
+        const lb=rv?'🔵 En revisión':pg?'✅ Pagado':pc?'🟣 Parcial':cd?'🚫 Condonado':'⏳ Pendiente';
         const sub=pc?`${fmt(r.total)} · abonado ${fmt(r.montoPagado||0)}`:fmt(r.total);
         return `<div onclick="miReciboVer('${r.id}')" style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;cursor:pointer;${i<recs.length-1?'border-bottom:1px solid #F5F0E8;':''}"><div><div style="font-size:13px;font-weight:600;color:#0D1B2A;">${r.mes||'—'} ${r.anio||''}</div><div style="font-size:11px;color:#8A9BB0;">${sub}</div></div><div style="display:flex;align-items:center;gap:6px;"><div style="padding:4px 12px;border-radius:50px;font-size:11px;font-weight:700;background:${bg};color:${cl};">${lb}</div><div style="color:#C9973A;font-size:14px;">›</div></div></div>`;
       }).join('')}
@@ -3390,9 +3451,126 @@ window.miReciboVer = async function(id) {
   ].filter(([,v])=>(v||0)>0);
   document.getElementById('mi-recibo-body').innerHTML = rbBuildReciboHTML(r, lineas, fmt, tesorero, true);
   window._miReciboActual = r;
+  // Panel de pago (solo recibos sin pagar): datos bancarios + envío de comprobante
+  const pagoWrap = document.getElementById('mi-recibo-pago');
+  if (pagoWrap) {
+    const st = getReciboStatusEx(r);
+    if (st !== 'pagado' && st !== 'condonado') {
+      pagoWrap.innerHTML = _miReciboPagoPanel(r, fmt);
+      pagoWrap.style.display = 'block';
+    } else {
+      pagoWrap.innerHTML = '';
+      pagoWrap.style.display = 'none';
+    }
+  }
   const ov = document.getElementById('mi-recibo-overlay');
   ov.style.display = 'flex';
   ov.scrollTop = 0;
+};
+
+// HTML del panel de pago del socio: datos bancarios copiables + botón de comprobante
+function _miReciboPagoPanel(r, fmt) {
+  const saldo = Math.max(0, Number(r.total||0) - Number(r.montoPagado||0));
+  const rev = r.revisionPago || {};
+  const enRevision = rev.estado === 'pendiente_revision';
+  const rechazado = rev.estado === 'rechazado';
+  const rechazoNota = rechazado
+    ? `<div style="display:flex;align-items:flex-start;gap:10px;padding:12px 14px;background:rgba(192,57,43,0.08);border:1.5px solid rgba(192,57,43,0.3);border-radius:12px;margin-bottom:12px;">
+         <div style="font-size:20px;">⚠️</div>
+         <div><div style="font-size:13.5px;font-weight:800;color:#C0392B;">Tu comprobante fue rechazado</div>
+           <div style="font-size:12px;color:#5A6B7E;margin-top:2px;">${rev.motivoRechazo?esc(rev.motivoRechazo):'Vuelve a enviar un comprobante válido de tu transferencia.'}</div></div>
+       </div>`
+    : '';
+  const copyRow = (label, valor, id) => `
+    <div onclick="copiarAlPortapapeles('${jsAttrEsc(valor)}','${jsAttrEsc(label)}')"
+         style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:11px 14px;background:#fff;border:1.5px solid #E8E0D4;border-radius:11px;margin-bottom:8px;cursor:pointer;-webkit-tap-highlight-color:transparent;"
+         onmousedown="this.style.background='#FBF7EF'" onmouseup="this.style.background='#fff'">
+      <div style="min-width:0;">
+        <div style="font-size:10px;font-weight:700;color:#8A9BB0;letter-spacing:.5px;text-transform:uppercase;">${label}</div>
+        <div style="font-size:15px;font-weight:800;color:#0D1B2A;letter-spacing:.5px;font-variant-numeric:tabular-nums;word-break:break-all;">${esc(valor)}</div>
+      </div>
+      <div style="flex-shrink:0;display:flex;align-items:center;gap:5px;color:#C9973A;font-size:12px;font-weight:700;">
+        <span style="font-size:16px;">📋</span> Copiar
+      </div>
+    </div>`;
+  const banner = enRevision
+    ? `<div style="display:flex;align-items:center;gap:10px;padding:14px 16px;background:rgba(41,128,185,0.1);border:1.5px solid rgba(41,128,185,0.35);border-radius:12px;">
+         <div style="font-size:22px;">🔵</div>
+         <div>
+           <div style="font-size:14px;font-weight:800;color:#2471A3;">Comprobante enviado — Pendiente de revisión</div>
+           <div style="font-size:12px;color:#5A6B7E;margin-top:2px;">La tesorería revisará tu pago y confirmará el recibo. ${rev.enviadoEn?('Enviado el '+parseDateLocal(rev.enviadoEn).toLocaleDateString('es-MX')):''}</div>
+           ${rev.comprobanteUrl?`<a href="${safeUrl(rev.comprobanteUrl)}" target="_blank" rel="noopener" style="display:inline-block;margin-top:6px;font-size:12px;font-weight:700;color:#2980B9;text-decoration:underline;">Ver comprobante enviado</a>`:''}
+         </div>
+       </div>
+       <button onclick="miReciboEnviarComprobante('${r.id}')" style="width:100%;margin-top:10px;padding:11px;background:#F5F0E8;color:#8A9BB0;border:none;border-radius:11px;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;cursor:pointer;">🔁 Reemplazar comprobante</button>`
+    : `<button onclick="miReciboEnviarComprobante('${r.id}')" id="mi-recibo-enviar-btn"
+         style="width:100%;padding:16px;background:linear-gradient(135deg,#1A7A4A,#15623C);color:#fff;border:none;border-radius:13px;font-family:'DM Sans',sans-serif;font-size:15px;font-weight:800;cursor:pointer;box-shadow:0 4px 14px rgba(26,122,74,0.3);display:flex;align-items:center;justify-content:center;gap:8px;">
+         📤 Enviar comprobante de pago
+       </button>
+       <div style="font-size:11.5px;color:#8A9BB0;text-align:center;margin-top:8px;">Sube una foto o captura de tu transferencia desde tu galería.</div>`;
+  return `
+    <div style="max-width:520px;margin:0 auto;padding:0 16px 30px;">
+      <div style="background:linear-gradient(135deg,#0D1B2A,#1A2E42);border-radius:16px;padding:18px 18px 20px;border:1px solid rgba(201,151,58,0.25);">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;">
+          <div style="font-size:11px;font-weight:700;color:#E8B84B;letter-spacing:1px;text-transform:uppercase;">💳 Pagar este recibo</div>
+          <div style="font-family:'Playfair Display',serif;font-size:20px;font-weight:900;color:#fff;">${fmt(saldo)}</div>
+        </div>
+        <div style="font-size:12px;color:rgba(255,255,255,0.55);margin-bottom:14px;">Transfiere a la cuenta del club y envía tu comprobante.</div>
+        <div style="background:rgba(255,255,255,0.06);border-radius:12px;padding:12px;">
+          <div style="font-size:12.5px;font-weight:700;color:#fff;margin-bottom:2px;">🏦 ${CLUB_BANCO.banco}</div>
+          <div style="font-size:12px;color:rgba(255,255,255,0.6);margin-bottom:10px;">${esc(CLUB_BANCO.titular)}</div>
+          ${copyRow('No. de cuenta', CLUB_BANCO.cuenta)}
+          ${copyRow('CLABE interbancaria', CLUB_BANCO.clabe)}
+          <div style="font-size:11px;color:rgba(255,255,255,0.45);text-align:center;margin-top:4px;">Toca cualquiera de los datos para copiarlo</div>
+        </div>
+      </div>
+      <div style="margin-top:16px;">
+        ${rechazoNota}${banner}
+      </div>
+    </div>`;
+}
+window._miReciboPagoPanel = _miReciboPagoPanel;
+
+// Enviar comprobante de pago: abre galería, sube a Cloudinary y marca el recibo "pendiente de revisión"
+window.miReciboEnviarComprobante = function(reciboId) {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = 'image/*,.heic,.HEIC,.heif,.HEIF';
+  input.onchange = async () => {
+    const file = input.files && input.files[0];
+    if (!file) return;
+    if (!file.type.startsWith('image/') && !/\.(heic|heif)$/i.test(file.name || '')) {
+      showToast('Selecciona una imagen (foto o captura)', 'error');
+      return;
+    }
+    const btn = document.getElementById('mi-recibo-enviar-btn');
+    if (btn) { btn.disabled = true; btn.style.opacity = '0.6'; btn.innerHTML = '⏳ Subiendo comprobante…'; }
+    try {
+      const url = await uploadPhoto(file);
+      const u = window.currentUser || {};
+      const revisionPago = {
+        estado: 'pendiente_revision',
+        comprobanteUrl: url,
+        enviadoEn: new Date().toISOString(),
+        enviadoPorUID: u.uid || '',
+        enviadoPorNombre: ((u.nombre||'') + ' ' + (u.apellido||'')).trim(),
+      };
+      await updateDoc(doc(db, 'recibos', reciboId), { revisionPago, modificado: new Date().toISOString() });
+      // Actualizar copia local y re-render
+      const rec = (window._misRecibos || []).find(x => x.id === reciboId);
+      if (rec) rec.revisionPago = revisionPago;
+      if (typeof invalidateCollectionCache === 'function') invalidateCollectionCache('recibos');
+      try { await logAuditoria('enviar_comprobante_pago', { reciboId, comprobanteUrl: url }); } catch(_) {}
+      showToast('✅ Comprobante enviado. Queda pendiente de revisión.', 'success');
+      if (rec) window.miReciboVer(reciboId);   // refresca el overlay al estado "en revisión"
+      if (window._misRecibos) _renderMisRecibos(window._misRecibos);
+    } catch (e) {
+      console.error('miReciboEnviarComprobante ERROR:', e);
+      showToast('No se pudo enviar el comprobante: ' + (e.message || ''), 'error');
+      if (btn) { btn.disabled = false; btn.style.opacity = '1'; btn.innerHTML = '📤 Enviar comprobante de pago'; }
+    }
+  };
+  input.click();
 };
 
 window.miReciboVolver = function() {
@@ -3605,7 +3783,7 @@ window.dpImprimirSelCerrar = function() {
       else if (id === 'screen-botana') { await renderBotanaScreen(); }
       else if (id === 'screen-damas')  { await renderDamasScreen(); }
       else if (id === 'screen-paloma') { await renderPalomaScreen(); }
-      else if (id === 'screen-recursos') { if (window.currentUser?.rol==='mutualista') await loadMutualistaView(); }
+      else if (id === 'screen-recursos') { if (window.currentUser?.rol==='mutualista') await loadMutualistaView(); await loadGaleriaRosters(); }
       else if (id === 'screen-admin') { await Promise.all([loadPendingRequests(), loadAdminMembers()]); }
       else if (id === 'screen-myprofile') { if (window.currentUser) updateNavUI(window.currentUser); }
     } catch(e) { console.warn('PTR error:', e); }
@@ -4473,15 +4651,77 @@ window.deleteComunicado = async function(id) {
 
 window.closeComunicadoModal = function() { document.getElementById('modal-comunicado').style.display = 'none'; document.body.classList.remove('modal-open'); }
 
+// ── Consolidación de cuenta offline → cuenta en línea ────────────────────────
+// Cuando un socio capturado a mano (offline) se registra o se activa, reasigna
+// TODOS sus recibos y comprobantes a la nueva cuenta, hereda sus datos (número
+// de socio, cargos históricos, etc.) y retira la cuenta offline. Requiere que
+// quien lo ejecuta sea admin/subadmin (las reglas exigen `migracionDesde` +
+// isAdminOrSub para cambiar socioUID en recibos). Idempotente.
+async function consolidarCuentaOffline(offlineId, newUid) {
+  const res = { recibos: 0, pagos: 0, copiados: [] };
+  if (!offlineId || !newUid || offlineId === newUid) return res;
+  // 1) Heredar datos que el registro no captura (número de socio, cargos, etc.)
+  try {
+    const [offSnap, newSnap] = await Promise.all([
+      getDoc(doc(db,'usuarios',offlineId)),
+      getDoc(doc(db,'usuarios',newUid)),
+    ]);
+    const off = offSnap.exists() ? offSnap.data() : {};
+    const nw  = newSnap.exists() ? newSnap.data() : {};
+    const heredables = ['numeroSocio','cargosHistoricos','whatsapp','fechaIngreso','conyuge','fechaNacimiento','padrinoUID','padrinoNombre'];
+    const patch = {};
+    heredables.forEach(k => {
+      const cur = nw[k];
+      const vacio = cur == null || cur === '' || (Array.isArray(cur) && cur.length === 0);
+      const tieneOff = off[k] != null && off[k] !== '' && !(Array.isArray(off[k]) && off[k].length === 0);
+      if (vacio && tieneOff) patch[k] = off[k];
+    });
+    if (Object.keys(patch).length) { await updateDoc(doc(db,'usuarios',newUid), patch); res.copiados = Object.keys(patch); }
+  } catch(e) { console.warn('consolidar: herencia de datos falló', e); }
+  // 2) Reasignar recibos (migracionDesde es el marcador que exige la regla)
+  const recSnap = await getDocs(query(collection(db,'recibos'), where('socioUID','==',offlineId)));
+  for (const d of recSnap.docs) {
+    await updateDoc(doc(db,'recibos',d.id), { socioUID: newUid, migracionDesde: offlineId });
+    res.recibos++;
+  }
+  // 3) Reasignar comprobantes de pago (pagos_socios)
+  try {
+    const psSnap = await getDocs(query(collection(db,'pagos_socios'), where('socioUID','==',offlineId)));
+    for (const d of psSnap.docs) { await updateDoc(doc(db,'pagos_socios',d.id), { socioUID: newUid }); res.pagos++; }
+  } catch(e) { console.warn('consolidar: pagos_socios falló', e); }
+  // 4) Retirar la cuenta offline (queda oculta de todas las listas)
+  await updateDoc(doc(db,'usuarios',offlineId), {
+    migrado: true, migradoA: newUid, offline: false, activo: false,
+    consolidadoEn: new Date().toISOString(),
+  });
+  return res;
+}
+window.consolidarCuentaOffline = consolidarCuentaOffline;
+
 window.aprobarSocio = async function(uid, nombre) {
   try {
     await Promise.all([
       updateDoc(doc(db,'usuarios',uid), {rol: 'miembro'}),
       setDoc(doc(db,'roles',uid), { rol: 'miembro', activo: true }, { merge: true })
     ]);
-    invalidateCollectionCache('usuarios','roles');
+    // Si venía enlazado a una cuenta offline, consolidar sus recibos ahora que
+    // lo ejecuta un admin (evita que quede como cuenta partida tipo "Carlos").
+    let consol = null;
+    try {
+      const uSnap = await getDoc(doc(db,'usuarios',uid));
+      const offlineId = uSnap.exists() ? (uSnap.data().offlineLinkedId || null) : null;
+      if (offlineId) {
+        consol = await consolidarCuentaOffline(offlineId, uid);
+        await logAuditoria('consolidar_offline', { offlineId, newUid: uid, recibos: consol.recibos, pagos: consol.pagos, copiados: consol.copiados });
+      }
+    } catch(eC) {
+      console.error('Consolidación offline al aprobar:', eC);
+      showToast('⚠️ Aprobado, pero no se pudieron vincular sus recibos. Revisa manualmente.', 'error');
+    }
+    invalidateCollectionCache('usuarios','roles','recibos','pagos');
     await logAuditoria('aprobar_socio', { uid, nombre });
-    showToast(nombre+' aprobado ✅','success');
+    const extra = consol && consol.recibos ? ` · ${consol.recibos} recibo${consol.recibos>1?'s':''} vinculado${consol.recibos>1?'s':''}` : '';
+    showToast(nombre+' aprobado ✅'+extra,'success');
     await Promise.all([loadPendingRequests(), loadAdminMembers(), loadDirectory()]);
   } catch(e) {
     console.error('aprobarSocio ERROR:', e);
@@ -5028,6 +5268,175 @@ window.toggleDoc = function(id) {
   if (!isOpen) { body.style.display = 'block'; icon.textContent = '▲'; }
 }
 
+// ══════════════════════════════════════════════════════════════
+//  GALERÍA HISTÓRICA — Presidentes y Reinas (CRUD admin/subadmin)
+// ══════════════════════════════════════════════════════════════
+let _galPresidentes = [];
+let _galReinas = [];
+let _galTab = 'presidentes';
+let _galLoaded = false;
+
+function _isGalAdmin(u){ return !!u && (u.rol==='admin' || u.rol==='subadmin'); }
+function _galEsc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+function _galStartYear(p){ const m = String(p||'').match(/\d{4}/); return m ? parseInt(m[0],10) : 0; }
+function _galEndYear(p){ const m = String(p||'').match(/(\d{4})\D*$/); return m ? parseInt(m[1],10) : _galStartYear(p); }
+function _galRangeLabel(list){
+  if(!list.length) return '';
+  const min = Math.min(...list.map(x=> x._ini || _galStartYear(x.periodo)));
+  const max = Math.max(...list.map(x=> _galEndYear(x.periodo)));
+  return min + ' – ' + max;
+}
+
+async function loadGaleria(force){
+  if(_galLoaded && !force) return;
+  const [ps, rs] = await Promise.all([
+    getDocs(collection(db,'presidentes')),
+    getDocs(collection(db,'reinas'))
+  ]);
+  _galPresidentes = ps.docs.map(d=>({id:d.id, ...d.data()}));
+  _galReinas      = rs.docs.map(d=>({id:d.id, ...d.data()}));
+  [_galPresidentes,_galReinas].forEach(list=> list.forEach(x=> x._ini=_galStartYear(x.periodo)));
+  const byYear = (a,b)=> a._ini - b._ini;
+  _galPresidentes.sort(byYear);
+  _galReinas.sort(byYear);
+  _galLoaded = true;
+}
+
+function _galRosterRows(list, withAlias){
+  if(!list.length) return '<div style="text-align:center;padding:18px;color:#8A9BB0;font-size:12px;">Sin registros aún.</div>';
+  const lastIni = Math.max(...list.map(x=> x._ini||0));
+  return list.map((x,i)=>{
+    const cur = (x._ini===lastIni) ? ' current' : '';
+    const alias = withAlias && x.alias ? '<div class="roster-alias">'+_galEsc(x.alias)+'</div>' : '';
+    return '<div class="roster-row'+cur+'"><div class="roster-num">'+(i+1)+'</div><div class="roster-main"><div class="roster-name">'+_galEsc(x.nombre)+'</div>'+alias+'</div><div class="roster-year">'+_galEsc(x.periodo)+'</div></div>';
+  }).join('');
+}
+
+async function loadGaleriaRosters(){
+  try{
+    await loadGaleria();
+    const cp = document.getElementById('roster-presidentes');
+    const cr = document.getElementById('roster-reinas');
+    if(cp) cp.innerHTML = _galRosterRows(_galPresidentes, false);
+    if(cr) cr.innerHTML = _galRosterRows(_galReinas, true);
+    const sp = document.getElementById('galeria-sub-presidentes');
+    const sr = document.getElementById('galeria-sub-reinas');
+    if(sp) sp.textContent = _galPresidentes.length + ' directivas · ' + _galRangeLabel(_galPresidentes);
+    if(sr) sr.textContent = _galReinas.length + ' reinados · ' + _galRangeLabel(_galReinas);
+    const rp = document.getElementById('galeria-range-presidentes');
+    const rr = document.getElementById('galeria-range-reinas');
+    if(rp) rp.textContent = _galRangeLabel(_galPresidentes) || '—';
+    if(rr) rr.textContent = _galRangeLabel(_galReinas) || '—';
+  }catch(e){ console.warn('galeria rosters', e); }
+}
+window.loadGaleriaRosters = loadGaleriaRosters;
+
+// ── Panel de administración ──
+async function galeriaRenderAdmin(){
+  if(!_isGalAdmin(window.currentUser)){ return; }
+  const cont = document.getElementById('galeria-admin-list');
+  if(cont) cont.innerHTML = '<div style="text-align:center;padding:24px;color:#8A9BB0;font-size:13px;">Cargando…</div>';
+  await loadGaleria(true);
+  _galRenderTab(_galTab);
+}
+window.galeriaRenderAdmin = galeriaRenderAdmin;
+
+window.galeriaSetTab = function(tab){
+  _galTab = tab;
+  document.querySelectorAll('.gal-tab').forEach(b=> b.classList.toggle('active', b.dataset.tab===tab));
+  _galRenderTab(tab);
+};
+window.galeriaAddCurrent = function(){ galeriaOpenModal(_galTab); };
+
+function _galRenderTab(tab){
+  const cont = document.getElementById('galeria-admin-list');
+  if(!cont) return;
+  const list = tab==='reinas' ? _galReinas : _galPresidentes;
+  const withAlias = tab==='reinas';
+  const count = document.getElementById('galeria-admin-count');
+  if(count) count.textContent = list.length + ' registro' + (list.length===1?'':'s');
+  if(!list.length){ cont.innerHTML = '<div style="text-align:center;padding:24px;color:#8A9BB0;font-size:13px;">Sin registros. Toca “＋ Agregar”.</div>'; return; }
+  cont.innerHTML = list.map((x,i)=>{
+    const alias = withAlias && x.alias ? '<div style="font-size:11px;color:var(--gold);font-style:italic;">'+_galEsc(x.alias)+'</div>' : '';
+    return '<div class="gal-adm-row">'
+      + '<div class="roster-num" style="width:26px;">'+(i+1)+'</div>'
+      + '<div style="flex:1;min-width:0;">'
+        + '<div style="font-size:13px;font-weight:600;color:var(--navy);">'+_galEsc(x.nombre)+'</div>'
+        + alias
+        + '<div style="font-size:11px;color:#6B7C8F;">'+_galEsc(x.periodo)+'</div>'
+      + '</div>'
+      + '<button class="gal-icon-btn" onclick="galeriaOpenModal(\''+tab+'\',\''+x.id+'\')" title="Editar">✏️</button>'
+      + '<button class="gal-icon-btn danger" onclick="galeriaDelete(\''+tab+'\',\''+x.id+'\')" title="Eliminar">🗑️</button>'
+    + '</div>';
+  }).join('');
+}
+
+window.galeriaOpenModal = function(tab, id){
+  if(!_isGalAdmin(window.currentUser)) return;
+  _galTab = tab;
+  const isReina = tab==='reinas';
+  const list = isReina ? _galReinas : _galPresidentes;
+  const item = id ? list.find(x=>x.id===id) : null;
+  document.getElementById('gal-modal-id').value = id || '';
+  document.getElementById('gal-modal-tipo').value = tab;
+  document.getElementById('gal-modal-nombre').value = item ? (item.nombre||'') : '';
+  document.getElementById('gal-modal-periodo').value = item ? (item.periodo||'') : '';
+  document.getElementById('gal-modal-alias').value = item ? (item.alias||'') : '';
+  document.getElementById('gal-alias-wrap').style.display = isReina ? 'block' : 'none';
+  document.getElementById('gal-modal-title').textContent = (item ? '✏️ Editar ' : '＋ Nuevo ') + (isReina ? 'reinado' : 'presidente');
+  document.getElementById('modal-galeria').style.display = 'flex';
+};
+window.galeriaCloseModal = function(){ const m=document.getElementById('modal-galeria'); if(m) m.style.display='none'; };
+
+window.galeriaSave = async function(){
+  const u = window.currentUser;
+  if(!_isGalAdmin(u)) return;
+  const tab = document.getElementById('gal-modal-tipo').value;
+  const id  = document.getElementById('gal-modal-id').value;
+  const isReina = tab==='reinas';
+  const nombre  = document.getElementById('gal-modal-nombre').value.trim();
+  const periodo = document.getElementById('gal-modal-periodo').value.trim().replace(/\s+/g,'');
+  const alias   = document.getElementById('gal-modal-alias').value.trim();
+  if(!nombre){ showToast('Escribe el nombre','error'); return; }
+  if(!/^\d{4}-\d{4}$/.test(periodo)){ showToast('Periodo inválido (ej. 2024-2025)','error'); return; }
+  const btn = document.getElementById('gal-modal-save');
+  btn.disabled = true; const prev = btn.textContent; btn.textContent = 'Guardando…';
+  try{
+    const col = isReina ? 'reinas' : 'presidentes';
+    const payload = { nombre, periodo, actualizadoEn: Timestamp.now() };
+    if(isReina) payload.alias = alias || null;
+    if(id){
+      await updateDoc(doc(db,col,id), payload);
+      showToast('Actualizado ✅','success');
+    }else{
+      payload.creadoEn = Timestamp.now();
+      payload.creadoPor = auth.currentUser?.uid || '';
+      await addDoc(collection(db,col), payload);
+      showToast('Agregado ✅','success');
+    }
+    window.galeriaCloseModal();
+    await loadGaleria(true);
+    _galRenderTab(tab);
+    loadGaleriaRosters();
+  }catch(e){ console.warn(e); showToast('Error al guardar','error'); }
+  finally{ btn.disabled=false; btn.textContent=prev; }
+};
+
+window.galeriaDelete = async function(tab, id){
+  if(!_isGalAdmin(window.currentUser)) return;
+  const isReina = tab==='reinas';
+  const list = isReina ? _galReinas : _galPresidentes;
+  const item = list.find(x=>x.id===id);
+  if(!confirm('¿Eliminar a "'+(item?item.nombre:'')+'" ('+(item?item.periodo:'')+')?')) return;
+  try{
+    await deleteDoc(doc(db, isReina?'reinas':'presidentes', id));
+    showToast('Eliminado','success');
+    await loadGaleria(true);
+    _galRenderTab(tab);
+    loadGaleriaRosters();
+  }catch(e){ console.warn(e); showToast('Error al eliminar','error'); }
+};
+
 window.goTo = goTo;
 window.tipoLabel = tipoLabel;
 window.loadDirectory = loadDirectory;
@@ -5098,7 +5507,7 @@ async function showDesktopPanel(userData) {
 
   // Tesorero: ocultar secciones de gestión de socios/comunicados
   if (isTesorero()) {
-    ['nav-miembros','nav-solicitudes','nav-comunicados','nav-pagos'].forEach(id => {
+    ['nav-miembros','nav-solicitudes','nav-comunicados','nav-pagos','nav-galeria'].forEach(id => {
       const el = document.getElementById(id);
       if (el) el.style.display = 'none';
     });
@@ -5717,10 +6126,11 @@ async function dpShow(sec) {
   secEl.style.display='block';
   document.querySelector(`[data-sec="${sec}"]`)?.classList.add('active-nav');
 
-  const titles={dashboard:'Dashboard','alertas-bandeja':'🔔 Bandeja de Alertas',miembros:'Usuarios y Directorio',solicitudes:'Pendientes y Solicitudes',comunicados:'Comunicados PRO',pagos:'Pagos y Adeudos',aging:'Antigüedad de Adeudos',recibos:'Recibos de Cuotas',cuotas:'Tarifas Base',estadisticas:'Informe del Tesorero',auditoria:'Actividad del Sistema',mutualista:'Fondo Mutualista','saldo-bancos':'Saldo en Bancos y Caja','movimientos-fin':'Movimientos de Ingresos y Gastos','reportes-fin':'Reportes Financieros','rubros-fin':'Gestión de Rubros','cargos-hist':'Historial de Cargos',acreedores:'Acreedores — Control de Deuda',reservaciones:'Reservaciones de Salones','sec-informe':'Informe del Secretario','cambio-directiva':'🔄 Cambio de Directiva',integridad:'🛡️ Control de Integridad','eventos-sensibles':'⚠️ Eventos Sensibles','seguridad-aud':'🔒 Seguridad','alertas-aud':'🚨 Alertas de Integridad'};
+  const titles={dashboard:'Dashboard',directiva:'🦁 Mesa Directiva','alertas-bandeja':'🔔 Bandeja de Alertas',miembros:'Usuarios y Directorio',solicitudes:'Pendientes y Solicitudes',comunicados:'Comunicados PRO',pagos:'Pagos y Adeudos',aging:'Antigüedad de Adeudos',recibos:'Recibos de Cuotas',cuotas:'Tarifas Base',estadisticas:'Informe del Tesorero',auditoria:'Actividad del Sistema',mutualista:'Fondo Mutualista','saldo-bancos':'Saldo en Bancos y Caja','movimientos-fin':'Movimientos de Ingresos y Gastos','reportes-fin':'Reportes Financieros','rubros-fin':'Gestión de Rubros','cargos-hist':'Historial de Cargos',acreedores:'Acreedores — Control de Deuda',reservaciones:'Reservaciones de Salones','sec-informe':'Informe del Secretario','cambio-directiva':'🔄 Cambio de Directiva',galeria:'🏛️ Galería Histórica — Presidentes y Reinas',integridad:'🛡️ Control de Integridad','eventos-sensibles':'⚠️ Eventos Sensibles','seguridad-aud':'🔒 Seguridad','alertas-aud':'🚨 Alertas de Integridad'};
   document.getElementById('dp-topbar-title').textContent=titles[sec]||'Panel Admin';
 
   if(sec==='dashboard') dashboardLoad();
+  if(sec==='directiva') await directivaLoad();
   if(sec==='alertas-bandeja') await alertasBandejaLoad();
   if(sec==='miembros') dpRenderTable((window.allMembers||[]).filter(x => document.getElementById('dp-show-bajas')?.checked || x.estado !== 'baja'));
   if(sec==='solicitudes') await dpRenderRequests();
@@ -5747,6 +6157,7 @@ async function dpShow(sec) {
   if(sec==='reservaciones') await reservacionesLoad();
   if(sec==='sec-informe') await secLoad();
   if(sec==='cambio-directiva') await cambioDirectivaLoad();
+  if(sec==='galeria') await galeriaRenderAdmin();
 }
 window.dpShow = dpShow;
 globalThis.dpShow = dpShow;
@@ -6887,6 +7298,9 @@ async function cambioDirectivaCompute(startYear, force = false) {
   const frDepPeriodo = fondoRes.filter(m => (m.tipo === 'deposito' || m.tipo === 'saldo_inicial') && frEnRango(m.fecha)).reduce((s,m) => s + Number(m.monto || 0), 0);
   const frRetPeriodo = fondoRes.filter(m => m.tipo === 'retiro' && frEnRango(m.fecha)).reduce((s,m) => s + Number(m.monto || 0), 0);
   const saldoReservaFinal = saldoReservaInicial + frDepPeriodo - frRetPeriodo;
+  // Deuda acumulada con el Fondo de Reserva: TODO lo que el fondo ha entregado al club
+  // (salidas/retiros de todo el histórico). Ese efectivo entró a banco/caja pero el club lo adeuda al fondo.
+  const frRetTotal = fondoRes.filter(m => m.tipo === 'retiro').reduce((s,m) => s + Number(m.monto || 0), 0);
   const frMovimientos = fondoRes
     .filter(m => frEnRango(m.fecha) && (m.tipo === 'deposito' || m.tipo === 'saldo_inicial' || m.tipo === 'retiro'))
     .map(m => ({ fecha: m.fecha || '', concepto: m.concepto || (m.tipo === 'retiro' ? 'Retiro' : 'Depósito'), salida: m.tipo === 'retiro', monto: Number(m.monto || 0) }))
@@ -6951,12 +7365,15 @@ async function cambioDirectivaCompute(startYear, force = false) {
 
   // Disponible = banco + caja (la reserva NO entra; es de un comité)
   const disponible = saldoBanco + saldoCaja;
-  const patrimonioNeto = disponible + aging.total - totalPagar;
+  // Pasivos que restan en el patrimonio neto, además de las cuentas por pagar:
+  //  · Fondo Mutualista: dinero cobrado a socios que el club adeuda al fondo.
+  //  · Fondo de Reserva: todo lo que el fondo ha prestado/entregado al club (deuda acumulada).
+  const patrimonioNeto = disponible + aging.total - totalPagar - saldoMutualista - frRetTotal;
 
   return {
     startYear, desde, hasta, nextStart,
     saldoBanco, saldoCaja, disponible, saldoMutualista,
-    saldoReservaInicial, frDepPeriodo, frRetPeriodo, saldoReservaFinal, frMovimientos,
+    saldoReservaInicial, frDepPeriodo, frRetPeriodo, saldoReservaFinal, frMovimientos, frRetTotal,
     aging, cuentasPagar, totalPagar,
     ingItems, egrItems, totalIng, totalEgr, netoPeriodo: totalIng - totalEgr,
     eventos, totalEventos,
@@ -7008,9 +7425,11 @@ window.cambioDirectivaLoad = async function(force = false) {
     frDetalle +
     fila('Total depósitos (+)', d.frDepPeriodo, '#1A7A4A') +
     fila('Total salidas hacia el club (−)', d.frRetPeriodo, '#C0392B') +
-    fila('Saldo final del fondo', d.saldoReservaFinal, '#0D1B2A', true));
+    fila('Saldo final del fondo', d.saldoReservaFinal, '#0D1B2A', true) +
+    '<div style="font-size:11px;color:#8A9BB0;margin:8px 0 2px;">Lo que el fondo ha entregado al club (todo el histórico) es deuda del club con el fondo y resta en el patrimonio neto.</div>' +
+    fila('Deuda acumulada con el Fondo de Reserva', d.frRetTotal, '#C0392B', true));
 
-  const mutCard = card('⚫ Fondo Mutualista', fila('Saldo del fondo', d.saldoMutualista, '#5A6B7E', true));
+  const mutCard = card('⚫ Fondo Mutualista (deuda del club)', '<div style="font-size:11px;color:#8A9BB0;margin-bottom:6px;">Cobrado a socios que el club adeuda al fondo. Es un pasivo: resta en el patrimonio neto.</div>' + fila('Deuda con el Fondo Mutualista', d.saldoMutualista, '#8E44AD', true));
 
   const cobrarCard = card('🟢 Cuentas por cobrar (socios)',
     fila('0–30 días', d.aging.b0_30, '#1A7A4A') + fila('31–60 días', d.aging.b31_60, '#C9973A') + fila('61–90 días', d.aging.b61_90, '#E67E22') + fila('90+ días', d.aging.b90_mas, '#C0392B') + fila(`Total por cobrar · ${d.aging.nSocios} socio${d.aging.nSocios!==1?'s':''}`, d.porCobrar, '#0D1B2A', true));
@@ -7043,9 +7462,11 @@ window.cambioDirectivaLoad = async function(force = false) {
       ${kpi(d.disponible, 'Disponible (banco+caja)', '#1A7A4A')}
       ${kpi(d.porCobrar, 'Por cobrar (socios)', '#C9973A')}
       ${kpi(d.totalPagar, 'Por pagar (acreedores)', '#C0392B')}
+      ${kpi(d.saldoMutualista, 'Deuda con el Fondo Mutualista', '#8E44AD')}
+      ${kpi(d.frRetTotal, 'Deuda con el Fondo de Reserva', '#C0392B')}
       ${kpi(d.patrimonioNeto, 'Patrimonio neto estimado', '#0D1B2A')}
     </div>
-    <div style="font-size:11px;color:#8A9BB0;margin-bottom:16px;">Periodo de gestión <b>${esc(d.startYear)}–${esc(d.startYear+1)}</b> (${esc(d.desde)} a ${esc(d.hasta)}) · Saldos y deudas a la fecha de hoy. Fondo de Reserva y Mutualista se reportan aparte (no entran al patrimonio del club).</div>
+    <div style="font-size:11px;color:#8A9BB0;margin-bottom:16px;">Periodo de gestión <b>${esc(d.startYear)}–${esc(d.startYear+1)}</b> (${esc(d.desde)} a ${esc(d.hasta)}) · Saldos y deudas a la fecha de hoy. El <b>saldo</b> del Fondo de Reserva es de un comité y no entra al patrimonio, pero <b>lo que ese fondo ha entregado al club sí resta</b> (es deuda del club). El Fondo Mutualista también resta porque es deuda con los socios.</div>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px;">
       ${dispCard}${reservaCard}${mutCard}${cobrarCard}${pagarCard}${ingCard}${egrCard}
     </div>
@@ -7130,15 +7551,24 @@ window.cambioDirectivaGenerarActa = async function() {
       <tr><td colspan="2">Total depósitos en el periodo (+)</td><td class="num">${fmt(d.frDepPeriodo)}</td></tr>
       <tr><td colspan="2">Total salidas hacia el club (−)</td><td class="num">−${fmt(d.frRetPeriodo)}</td></tr>
       <tr class="tot"><td colspan="2">SALDO FINAL DEL FONDO</td><td class="num">${fmt(d.saldoReservaFinal)}</td></tr>
+      <tr class="tot"><td colspan="2">DEUDA ACUMULADA DEL CLUB CON EL FONDO (todo el histórico)</td><td class="num">${fmt(d.frRetTotal)}</td></tr>
     </tbody></table>
-    <h2>3. Fondo Mutualista</h2>
-    ${tabla('Saldo del Fondo Mutualista', trMoney('Saldo del Fondo Mutualista', d.saldoMutualista, {tot:true}))}
+    <p class="nota">El saldo del fondo es de un comité y no entra al patrimonio del club. Lo que el fondo ha entregado al club a lo largo del tiempo (salidas) es deuda del club con el fondo y se descuenta del patrimonio neto (sección 6).</p>
+    <h2>3. Fondo Mutualista (deuda del club con los socios)</h2>
+    ${tabla('Pasivo con el Fondo Mutualista', trMoney('DEUDA CON EL FONDO MUTUALISTA', d.saldoMutualista, {tot:true}))}
+    <p class="nota">Importe cobrado a los socios que el club adeuda al Fondo Mutualista. Es un pasivo del club y por ello se descuenta del patrimonio neto (sección 6).</p>
     <h2>4. Cuentas por cobrar (adeudos de socios)</h2>
     ${tabla('Cartera por antigüedad', cobrarRows)}
     <h2>5. Cuentas por pagar (acreedores)</h2>
     ${tabla('Deuda con acreedores', pagarRows)}
     <h2>6. Patrimonio neto estimado del club</h2>
-    ${tabla('Disponible (banco+caja) + por cobrar − por pagar', trMoney('PATRIMONIO NETO ESTIMADO', d.patrimonioNeto, {tot:true}))}
+    ${tabla('Disponible (banco+caja) + por cobrar − por pagar − deuda mutualista − deuda fondo de reserva',
+      trMoney('Disponible (banco+caja)', d.disponible) +
+      trMoney('(+) Cuentas por cobrar a socios', d.porCobrar) +
+      trMoney('(−) Cuentas por pagar a acreedores', -d.totalPagar) +
+      trMoney('(−) Deuda con el Fondo Mutualista', -d.saldoMutualista) +
+      trMoney('(−) Deuda con el Fondo de Reserva', -d.frRetTotal) +
+      trMoney('PATRIMONIO NETO ESTIMADO', d.patrimonioNeto, {tot:true}))}
     <h2>7. Ingresos del periodo de gestión (${esc(d.desde)} a ${esc(d.hasta)})</h2>
     ${tabla('Ingresos del periodo', ingRows)}
     <h2>8. Egresos del periodo de gestión (${esc(d.desde)} a ${esc(d.hasta)})</h2>
@@ -7242,6 +7672,19 @@ async function alertasBandejaCompute(force = false) {
     });
   }
 
+  // ── 3b. Comprobantes de pago enviados por socios, pendientes de revisión ──
+  const pagosPorRevisar = (recibos || []).filter(r => r.revisionPago && r.revisionPago.estado === 'pendiente_revision');
+  window._pagosPorRevisar = pagosPorRevisar;
+  if (pagosPorRevisar.length > 0) {
+    const montoPR = pagosPorRevisar.reduce((s,r) => s + Math.max(0, Number(r.total || 0) - Number(r.montoPagado || 0)), 0);
+    alertas.push({
+      nivel:'importante', icono:'💸',
+      titulo:`${pagosPorRevisar.length} pago${pagosPorRevisar.length>1?'s':''} recibido${pagosPorRevisar.length>1?'s':''} por revisar`,
+      detalle:`Socios enviaron comprobante de transferencia por ${fmtMXN(montoPR)}. Revísalos, confirma el pago y afecta la cuenta de bancos.`,
+      accion:'Revisar pagos', onclickRaw:'pagosRecibidosAbrir()'
+    });
+  }
+
   // ── 4. Acreedores con saldo y vencimiento vencido / próximo ──
   const limiteVenc = new Date(hoy.getTime() + ALERTAS_DIAS_VENC * 86400000);
   let vencidos = 0, porVencer = 0;
@@ -7326,9 +7769,323 @@ window.alertasBandejaLoad = async function(force = false) {
         </div>
         <div style="font-size:12.5px;color:#5A6B7E;line-height:1.5;">${esc(a.detalle)}</div>
       </div>
-      ${a.sec ? `<button onclick="dpShow('${a.sec}')" style="flex-shrink:0;padding:8px 14px;background:#fff;color:${m.color};border:1.5px solid ${m.color};border-radius:9px;font-family:'DM Sans',sans-serif;font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap;">${esc(a.accion || 'Ver')} →</button>` : ''}
+      ${(a.onclickRaw || a.sec) ? `<button onclick="${a.onclickRaw ? esc(a.onclickRaw) : `dpShow('${a.sec}')`}" style="flex-shrink:0;padding:8px 14px;background:#fff;color:${m.color};border:1.5px solid ${m.color};border-radius:9px;font-family:'DM Sans',sans-serif;font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap;">${esc(a.accion || 'Ver')} →</button>` : ''}
     </div>`;
   }).join('');
+};
+
+// ════════════════════════════════════════════════════════════
+//  PAGOS RECIBIDOS — Revisión de comprobantes enviados por socios
+// ════════════════════════════════════════════════════════════
+window.pagosRecibidosAbrir = async function() {
+  const modal = document.getElementById('dp-modal-pagos-recibidos');
+  const body = document.getElementById('dp-pagos-recibidos-body');
+  if (!modal || !body) return;
+  modal.style.display = 'flex';
+  body.innerHTML = '<div style="text-align:center;padding:40px;color:#8A9BB0;">Cargando pagos recibidos…</div>';
+  let lista = [];
+  try {
+    const recibos = await getCollectionCached('recibos', 30000, true);
+    lista = (recibos || []).filter(r => r.revisionPago && r.revisionPago.estado === 'pendiente_revision');
+  } catch (e) {
+    console.warn('pagosRecibidosAbrir: usando caché local', e);
+    lista = window._pagosPorRevisar || [];
+  }
+  // Ordenar del envío más antiguo al más reciente
+  lista.sort((a,b) => new Date(a.revisionPago?.enviadoEn||0) - new Date(b.revisionPago?.enviadoEn||0));
+  window._pagosRecibidosLista = lista;
+  pagosRecibidosRender(lista);
+};
+
+function pagosRecibidosRender(lista) {
+  const body = document.getElementById('dp-pagos-recibidos-body');
+  if (!body) return;
+  const cnt = document.getElementById('dp-pagos-recibidos-count');
+  if (cnt) cnt.textContent = lista.length ? `${lista.length} por revisar` : '';
+  if (!lista.length) {
+    body.innerHTML = '<div style="text-align:center;padding:50px 20px;color:#1A7A4A;font-weight:600;">✅ No hay pagos pendientes por revisar.</div>';
+    return;
+  }
+  const fmt = n => fmtMXN(n);
+  const hoy = new Date().toISOString().slice(0,10);
+  body.innerHTML = lista.map(r => {
+    const saldo = Math.max(0, Number(r.total||0) - Number(r.montoPagado||0));
+    const nombre = `${r.nombreSocio||''} ${r.apellidoSocio||''}`.trim() || 'Socio';
+    const url = r.revisionPago?.comprobanteUrl || '';
+    const enviado = r.revisionPago?.enviadoEn ? parseDateLocal(r.revisionPago.enviadoEn).toLocaleString('es-MX') : '';
+    return `<div style="border:1px solid #EFE6D7;border-radius:14px;padding:14px;margin-bottom:14px;background:#fff;">
+      <div style="display:flex;gap:14px;align-items:flex-start;flex-wrap:wrap;">
+        <a href="${safeUrl(url)}" target="_blank" rel="noopener" style="flex-shrink:0;display:block;width:88px;height:88px;border-radius:10px;overflow:hidden;border:1px solid #EFE6D7;background:#F5F0E8;">
+          <img src="${safeUrl(url)}" alt="comprobante" style="width:100%;height:100%;object-fit:cover;" onerror="this.style.display='none'">
+        </a>
+        <div style="flex:1;min-width:180px;">
+          <div style="font-size:15px;font-weight:800;color:#0D1B2A;">${esc(nombre)}${r.numeroSocio?` · #${esc(String(r.numeroSocio))}`:''}</div>
+          <div style="font-size:12.5px;color:#5A6B7E;margin-top:2px;">${esc(r.mes||'—')} ${esc(String(r.anio||''))} · Recibo #${(r.id||'').slice(-6).toUpperCase()}</div>
+          <div style="font-size:18px;font-weight:900;color:#1A7A4A;margin-top:6px;">${fmt(saldo)}</div>
+          ${enviado?`<div style="font-size:11px;color:#8A9BB0;margin-top:2px;">📤 Enviado: ${esc(enviado)}</div>`:''}
+          <a href="${safeUrl(url)}" target="_blank" rel="noopener" style="display:inline-block;margin-top:6px;font-size:12px;font-weight:700;color:#2980B9;text-decoration:underline;">🔍 Ver comprobante en grande</a>
+        </div>
+      </div>
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:12px;padding-top:12px;border-top:1px solid #F0E8DC;">
+        <button onclick="pagosRecibidosAplicarAbrir('${r.id}')" style="flex:1;min-width:170px;padding:11px;background:linear-gradient(135deg,#1A7A4A,#15623C);color:#fff;border:none;border-radius:10px;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:800;cursor:pointer;">✅ Aplicar pago…</button>
+        <button onclick="pagosRecibidosRechazar('${r.id}')" style="padding:11px 14px;background:rgba(192,57,43,0.08);color:#C0392B;border:none;border-radius:10px;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;cursor:pointer;">✖ Rechazar</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+window.pagosRecibidosConfirmar = async function(reciboId) {
+  const fechaInput = document.getElementById('pr-fecha-' + reciboId);
+  const fecha = (fechaInput && fechaInput.value) || new Date().toISOString().slice(0,10);
+  const btn = document.getElementById('pr-confirm-' + reciboId);
+  if (btn) { btn.disabled = true; btn.textContent = 'Guardando…'; }
+  try {
+    const rRef = doc(db, 'recibos', reciboId);
+    const snap = await getDoc(rRef);
+    if (!snap.exists()) throw new Error('El recibo ya no existe');
+    const r = { id: snap.id, ...snap.data() };
+    const saldo = Math.max(0, Number(r.total||0) - Number(r.montoPagado||0));
+    const comprobanteUrl = r.revisionPago?.comprobanteUrl || '';
+    const conceptoMov = `Cuota — ${(r.nombreSocio||'')} ${(r.apellidoSocio||'')} (${r.mes||''} ${r.anio||''}) · transferencia`.replace(/\s+/g,' ').trim();
+    // 1) Ingreso a Bancos (solo si hay saldo por cobrar)
+    let movId = null;
+    if (saldo > 0) {
+      movId = await finAutoMovimiento('ingreso', 'Cuotas de Socios', conceptoMov, saldo, fecha, 'pago_socio', 'banco', { comprobanteUrl, reciboId, socioUID: r.socioUID || '' });
+    }
+    // 2) Marcar recibo pagado + cerrar la revisión
+    const fechaIso = new Date(fecha + 'T12:00:00').toISOString();
+    const u = window.currentUser || {};
+    const revisionPago = {
+      ...(r.revisionPago || {}),
+      estado: 'confirmado',
+      confirmadoEn: new Date().toISOString(),
+      confirmadoPorUID: u.uid || '',
+      confirmadoPorNombre: ((u.nombre||'') + ' ' + (u.apellido||'')).trim(),
+    };
+    const updates = {
+      estado: 'pagado',
+      montoPagado: Number(r.total || 0),
+      fechaPago: fecha,
+      fechaUltimoAbono: fechaIso,
+      movimientoDestino: 'banco',
+      revisionPago,
+      modificado: new Date().toISOString(),
+    };
+    if (movId) updates.movimientoFinId = movId;
+    await updateDoc(rRef, updates);
+    try { await logAuditoria('confirmar_pago_comprobante', { reciboId, monto: saldo, fecha, movimientoFinId: movId, socioUID: r.socioUID }); } catch(_) {}
+    invalidateCollectionCache('recibos','pagos','adeudos');
+    dpShowToast('✅ Pago confirmado y registrado en Bancos', 'success');
+    const lista = (window._pagosRecibidosLista || []).filter(x => x.id !== reciboId);
+    window._pagosRecibidosLista = lista;
+    pagosRecibidosRender(lista);
+    if (typeof alertasBandejaRefreshBadge === 'function') alertasBandejaRefreshBadge();
+    if (typeof dpPagosSyncAdeudo === 'function') { try { await dpPagosSyncAdeudo(r.socioUID); } catch(_) {} }
+  } catch (e) {
+    console.error('pagosRecibidosConfirmar ERROR:', e);
+    dpShowToast('No se pudo confirmar: ' + (e.message||''), 'error');
+    if (btn) { btn.disabled = false; btn.textContent = '✅ Confirmar pago'; }
+  }
+};
+
+window.pagosRecibidosRechazar = async function(reciboId) {
+  const motivo = prompt('Motivo del rechazo (opcional, se mostrará al socio):', '');
+  if (motivo === null) return;  // canceló
+  try {
+    const rRef = doc(db, 'recibos', reciboId);
+    const snap = await getDoc(rRef);
+    const r = snap.exists() ? { id: snap.id, ...snap.data() } : null;
+    const u = window.currentUser || {};
+    const revisionPago = {
+      ...(r?.revisionPago || {}),
+      estado: 'rechazado',
+      motivoRechazo: (motivo || '').trim(),
+      revisadoEn: new Date().toISOString(),
+      revisadoPorUID: u.uid || '',
+      revisadoPorNombre: ((u.nombre||'') + ' ' + (u.apellido||'')).trim(),
+    };
+    await updateDoc(rRef, { revisionPago, modificado: new Date().toISOString() });
+    try { await logAuditoria('rechazar_pago_comprobante', { reciboId, motivo: (motivo||'').trim() }); } catch(_) {}
+    invalidateCollectionCache('recibos');
+    dpShowToast('Comprobante rechazado', 'info');
+    const lista = (window._pagosRecibidosLista || []).filter(x => x.id !== reciboId);
+    window._pagosRecibidosLista = lista;
+    pagosRecibidosRender(lista);
+    if (typeof alertasBandejaRefreshBadge === 'function') alertasBandejaRefreshBadge();
+  } catch (e) {
+    console.error('pagosRecibidosRechazar ERROR:', e);
+    dpShowToast('No se pudo rechazar el comprobante', 'error');
+  }
+};
+
+window.pagosRecibidosCerrar = function() {
+  const m = document.getElementById('dp-modal-pagos-recibidos');
+  if (m) m.style.display = 'none';
+};
+
+// ══ APLICAR PAGO DE COMPROBANTE ═══════════════════════════════════════════
+// Al confirmar un comprobante, el admin elige: aplicarlo a un recibo específico
+// o repartirlo a la deuda total (más atrasado→más nuevo, rellenando parciales).
+window.pagosRecibidosAplicarAbrir = async function(reciboId) {
+  let recibos = [];
+  try { recibos = await getCollectionCached('recibos', 30000, true); } catch(e) { recibos = window.allRecibos || []; }
+  const attached = (recibos||[]).find(r => r.id === reciboId);
+  if (!attached) { dpShowToast('El recibo del comprobante ya no existe','error'); return; }
+  const socioUID = attached.socioUID || '';
+  const nombre = `${attached.nombreSocio||''} ${attached.apellidoSocio||''}`.trim() || 'Socio';
+  const delSocio = (recibos||[]).filter(r => r.socioUID === socioUID);
+  const pendientes = delSocio.filter(r => reciboEsDeuda(r) && getReciboSaldo(r) > 0)
+    .sort((a,b) => getReciboPeriodIndex(a) - getReciboPeriodIndex(b));
+  const saldoAttached = getReciboSaldo(attached);
+  const deudaTotal = pendientes.reduce((s,r)=>s+getReciboSaldo(r),0);
+  window._dpApCtx = { reciboId, socioUID, nombre, comprobanteUrl: attached.revisionPago?.comprobanteUrl||'', attached, pendientes, recibos: delSocio };
+  const fmt = n => fmtMXN(n);
+  const hoy = new Date().toISOString().slice(0,10);
+  document.getElementById('dp-ap-title').textContent = `Aplicar pago — ${nombre}`;
+  const optRecibos = pendientes.map(r => `<option value="${esc(r.id)}"${r.id===reciboId?' selected':''}>${esc(r.mes||'')} ${esc(String(r.anio||''))} · saldo ${fmt(getReciboSaldo(r))}</option>`).join('') || '<option value="">— Sin recibos pendientes —</option>';
+  const montoDefault = saldoAttached > 0 ? saldoAttached : deudaTotal;
+  document.getElementById('dp-ap-body').innerHTML = `
+    <div style="display:flex;gap:12px;align-items:center;margin-bottom:14px;">
+      ${window._dpApCtx.comprobanteUrl?`<a href="${safeUrl(window._dpApCtx.comprobanteUrl)}" target="_blank" rel="noopener" style="flex-shrink:0;width:64px;height:64px;border-radius:10px;overflow:hidden;border:1px solid #EFE6D7;display:block;"><img src="${safeUrl(window._dpApCtx.comprobanteUrl)}" style="width:100%;height:100%;object-fit:cover;" onerror="this.style.display='none'"></a>`:''}
+      <div style="font-size:12.5px;color:#5A6B7E;line-height:1.5;">Recibo del comprobante: <b>${esc(attached.mes||'')} ${esc(String(attached.anio||''))}</b><br>Saldo de ese recibo: <b>${fmt(saldoAttached)}</b> · Deuda total: <b>${fmt(deudaTotal)}</b></div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px;">
+      <div><div class="cd-lbl">Monto pagado</div><div style="position:relative;"><span style="position:absolute;left:12px;top:50%;transform:translateY(-50%);color:#8A9BB0;">$</span><input id="dp-ap-monto" type="text" inputmode="decimal" class="cd-inp dp-money" value="${_moneyFmt(montoDefault)}" oninput="pagosRecibidosAplicarPreview()" style="padding-left:26px;"></div></div>
+      <div><div class="cd-lbl">Fecha de pago</div><input type="date" id="dp-ap-fecha" value="${hoy}" class="cd-inp"></div>
+    </div>
+    <div style="margin-bottom:12px;">
+      <label style="display:flex;gap:8px;align-items:flex-start;padding:11px 13px;border:1.5px solid #E8E0D4;border-radius:10px;cursor:pointer;margin-bottom:8px;">
+        <input type="radio" name="dp-ap-modo" value="recibo" checked onchange="pagosRecibidosAplicarModoChange()" style="margin-top:2px;">
+        <div style="flex:1;"><div style="font-weight:700;font-size:13px;color:#0D1B2A;">🎯 Aplicar a un recibo específico</div><div style="font-size:11.5px;color:#8A9BB0;">El pago se aplica a un solo recibo (queda pagado o parcial).</div>
+          <select id="dp-ap-recibo" onchange="pagosRecibidosAplicarPreview()" class="cd-inp" style="margin-top:8px;">${optRecibos}</select>
+        </div>
+      </label>
+      <label style="display:flex;gap:8px;align-items:flex-start;padding:11px 13px;border:1.5px solid #E8E0D4;border-radius:10px;cursor:pointer;">
+        <input type="radio" name="dp-ap-modo" value="deuda" onchange="pagosRecibidosAplicarModoChange()" style="margin-top:2px;">
+        <div><div style="font-weight:700;font-size:13px;color:#0D1B2A;">📉 Aplicar a la deuda total</div><div style="font-size:11.5px;color:#8A9BB0;">Se reparte del recibo más atrasado al más nuevo; si sobra, el siguiente queda parcial. Si ya hay saldo parcial, se completa primero ese.</div></div>
+      </label>
+    </div>
+    <div id="dp-ap-preview" style="background:#F8F6F1;border-radius:10px;padding:12px 14px;"></div>`;
+  document.getElementById('dp-modal-aplicar-pago').style.display = 'flex';
+  pagosRecibidosAplicarPreview();
+};
+window.pagosRecibidosAplicarCerrar = function() {
+  const m = document.getElementById('dp-modal-aplicar-pago'); if (m) m.style.display = 'none';
+  window._dpApCtx = null;
+};
+window.pagosRecibidosAplicarModoChange = function() {
+  const modo = document.querySelector('input[name="dp-ap-modo"]:checked')?.value || 'recibo';
+  const sel = document.getElementById('dp-ap-recibo'); if (sel) sel.disabled = (modo !== 'recibo');
+  pagosRecibidosAplicarPreview();
+};
+function pagosRecibidosAplicarCalc() {
+  const ctx = window._dpApCtx; if (!ctx) return null;
+  const monto = moneyVal('dp-ap-monto');
+  const modo = document.querySelector('input[name="dp-ap-modo"]:checked')?.value || 'recibo';
+  if (modo === 'deuda') {
+    const d = dpPagosCalcDistribucion(monto, ctx.recibos);
+    return { modo, monto, ...d };
+  }
+  const rid = document.getElementById('dp-ap-recibo')?.value || ctx.reciboId;
+  const target = ctx.recibos.find(r => r.id === rid);
+  const deudaAntes = ctx.pendientes.reduce((s,r)=>s+getReciboSaldo(r),0);
+  if (!target) return { modo, monto, lineas:[], sobrante:monto, deudaAntes, deudaDespues:deudaAntes, aplicado:0 };
+  const saldo = getReciboSaldo(target);
+  const aplicar = Math.min(monto, saldo);
+  const nuevoPagado = Number(target.montoPagado||0) + aplicar;
+  const nuevoSaldo = Math.max(0, Number(target.total||0) - nuevoPagado);
+  const nuevoEstado = nuevoSaldo <= 0.0001 ? 'pagado' : (aplicar>0 ? 'parcial' : normalizeStr(target.estado||'pendiente'));
+  const lineas = [{ reciboId: target.id, mes: target.mes||'', anio: target.anio||'', totalRecibo:Number(target.total||0), saldoPrevio:saldo, montoPrevio:Number(target.montoPagado||0), aplicar, nuevoPagado, nuevoSaldo, nuevoEstado, __periodIdx:getReciboPeriodIndex(target) }];
+  return { modo, monto, lineas, sobrante: Math.max(0, monto-aplicar), deudaAntes, deudaDespues: Math.max(0, deudaAntes-aplicar), aplicado: aplicar };
+}
+window.pagosRecibidosAplicarPreview = function() {
+  const calc = pagosRecibidosAplicarCalc();
+  const wrap = document.getElementById('dp-ap-preview');
+  if (!wrap || !calc) return;
+  const fmt = n => fmtMXN(n);
+  const afect = (calc.lineas||[]).filter(l => l.aplicar > 0);
+  if (!afect.length || calc.aplicado <= 0) {
+    wrap.innerHTML = '<div style="text-align:center;padding:16px;color:#8A9BB0;font-size:12.5px;">Captura un monto para ver cómo se aplicará.</div>';
+    return;
+  }
+  const lineasHtml = afect.map(l => {
+    const cubierto = l.nuevoEstado === 'pagado';
+    const emoji = cubierto ? '✅' : '🟣';
+    const color = cubierto ? '#1A7A4A' : '#8E44AD';
+    const bg = cubierto ? 'rgba(26,122,74,0.07)' : 'rgba(142,68,173,0.08)';
+    const detalle = cubierto ? `Cubierto · ${fmt(l.aplicar)}` : `Abono ${fmt(l.aplicar)} de ${fmt(l.totalRecibo)} · Resta ${fmt(l.nuevoSaldo)}`;
+    return `<div style="display:flex;justify-content:space-between;align-items:center;padding:9px 12px;border-radius:9px;background:${bg};margin-bottom:6px;border-left:3px solid ${color};"><span style="font-size:12.5px;font-weight:600;color:#0D1B2A;">${emoji} ${esc(l.mes)} ${esc(String(l.anio))}</span><span style="font-size:12px;font-weight:600;color:${color};">${detalle}</span></div>`;
+  }).join('');
+  const sobrante = calc.sobrante > 0 ? `<div style="margin-top:6px;padding:8px 12px;border-radius:8px;background:rgba(230,126,34,0.1);color:#C47621;font-size:12px;font-weight:600;">⚠️ Sobran ${fmt(calc.sobrante)} sin aplicar (excede la deuda). Solo se registrará lo aplicado.</div>` : '';
+  wrap.innerHTML = lineasHtml + sobrante + `<div style="display:flex;justify-content:space-between;margin-top:10px;padding-top:10px;border-top:1px solid #EFE6D7;font-weight:800;font-size:13.5px;"><span>Total a aplicar</span><span style="color:#1A7A4A;">${fmt(calc.aplicado)}</span></div><div style="display:flex;justify-content:space-between;font-size:12px;color:#5A6B7E;margin-top:3px;"><span>Deuda tras el pago</span><span style="color:${calc.deudaDespues>0?'#C0392B':'#1A7A4A'};font-weight:700;">${fmt(calc.deudaDespues)}</span></div>`;
+};
+window.pagosRecibidosAplicarConfirmar = async function() {
+  const ctx = window._dpApCtx; if (!ctx) return;
+  const btn = document.getElementById('dp-ap-save');
+  const fecha = document.getElementById('dp-ap-fecha')?.value || new Date().toISOString().slice(0,10);
+  const calc = pagosRecibidosAplicarCalc();
+  if (!calc) return;
+  const afectadas = (calc.lineas||[]).filter(l => l.aplicar > 0);
+  if (!afectadas.length || calc.aplicado <= 0) { dpShowToast('Ingresa un monto válido a aplicar','error'); return; }
+  const hoy = new Date(); hoy.setHours(0,0,0,0);
+  const fPago = parseDateLocal(fecha);
+  if (fPago && fPago > hoy) { if (!confirm('⚠️ La fecha del pago es a futuro. ¿Continuar?')) return; }
+  if (calc.aplicado >= 50000) {
+    const verif = prompt(`⚠️ El monto a aplicar es de ${fmtMXN(calc.aplicado)} (alto). Para confirmar, escribe el monto:`);
+    if (verif === null) return;
+    if (Math.abs(Number(String(verif).replace(/[^\d.]/g,'')) - calc.aplicado) > 0.01) { dpShowToast('El monto no coincide. Cancelado.','error'); return; }
+  }
+  btn.disabled = true; const prevTxt = btn.textContent; btn.textContent = 'Guardando…';
+  try {
+    await runTransaction(db, async (tx) => {
+      for (const l of afectadas) {
+        const rSnap = await tx.get(doc(db,'recibos', l.reciboId));
+        if (!rSnap.exists()) throw new Error(`El recibo de ${l.mes} ${l.anio} ya no existe. Recarga.`);
+        const cur = Number(rSnap.data().montoPagado||0);
+        if (Math.abs(cur - l.montoPrevio) > 0.01) throw new Error(`El recibo de ${l.mes} ${l.anio} cambió por otra persona. Recarga y recalcula.`);
+      }
+    });
+    const fechaIso = new Date(fecha + 'T12:00:00').toISOString();
+    const periodos = afectadas.map(l => `${l.mes} ${l.anio}`).join(', ');
+    const conceptoMov = `Cuotas — ${ctx.nombre} (${periodos}) · transferencia`;
+    const movId = await finAutoMovimiento('ingreso','Cuotas de Socios', conceptoMov, calc.aplicado, fecha, 'pago_socio', 'banco', { comprobanteUrl: ctx.comprobanteUrl, reciboId: ctx.reciboId, socioUID: ctx.socioUID });
+    const desglose = afectadas.map(l => ({ reciboId:l.reciboId, mes:l.mes, anio:l.anio, totalRecibo:l.totalRecibo, saldoPrevio:l.saldoPrevio, montoPrevio:l.montoPrevio, montoAplicado:l.aplicar, nuevoPagado:l.nuevoPagado, nuevoSaldo:l.nuevoSaldo, nuevoEstado:l.nuevoEstado }));
+    const pagoSocio = { socioUID: ctx.socioUID, nombreSocio: ctx.nombre, numeroSocio: ctx.attached.numeroSocio||'', montoTotal: calc.aplicado, sobrante: calc.sobrante, fechaPago: fecha, metodoPago:'transferencia', destino:'banco', destinoLabel:'banco', referencia:'', origenComprobante: ctx.reciboId, comprobanteUrl: ctx.comprobanteUrl, desglose, deudaAntes: calc.deudaAntes, deudaDespues: calc.deudaDespues, movimientoFinId: movId||null, tesoreroNombre:(await rbGetTesorero()).nombre, creadoPorUid: window.currentUser?.uid||'', creadoPorNombre: ((window.currentUser?.nombre||'')+' '+(window.currentUser?.apellido||'')).trim(), creadoEn: new Date().toISOString() };
+    const pagoRef = await addDoc(collection(db,'pagos_socios'), pagoSocio);
+    const u = window.currentUser || {};
+    const revisionConf = { ...(ctx.attached.revisionPago||{}), estado:'confirmado', confirmadoEn:new Date().toISOString(), confirmadoPorUID:u.uid||'', confirmadoPorNombre:((u.nombre||'')+' '+(u.apellido||'')).trim(), aplicadoModo: calc.modo };
+    const batch = writeBatch(db);
+    let attachedTouched = false;
+    for (const l of afectadas) {
+      const rRef = doc(db,'recibos', l.reciboId);
+      const updates = { montoPagado: l.nuevoPagado, estado: l.nuevoEstado, fechaUltimoAbono: fechaIso, pagoSocioId: pagoRef.id, modificado: new Date().toISOString() };
+      if (l.nuevoEstado === 'pagado') { updates.fechaPago = fecha; updates.movimientoFinId = movId||null; updates.movimientoDestino = 'banco'; }
+      if (l.reciboId === ctx.reciboId) { updates.revisionPago = revisionConf; attachedTouched = true; }
+      batch.update(rRef, updates);
+    }
+    if (!attachedTouched) {
+      // El comprobante se aplicó a otros recibos; cierra igual la revisión del recibo adjunto.
+      batch.update(doc(db,'recibos', ctx.reciboId), { revisionPago: revisionConf, modificado: new Date().toISOString() });
+    }
+    await batch.commit();
+    try { await logAuditoria('confirmar_pago_comprobante', { reciboId: ctx.reciboId, modo: calc.modo, monto: calc.aplicado, recibosAfectados: afectadas.length, fecha, movimientoFinId: movId, pagoSocioId: pagoRef.id, socioUID: ctx.socioUID }); } catch(_) {}
+    invalidateCollectionCache('recibos','pagos','adeudos');
+    dpShowToast(`✅ Pago aplicado a ${afectadas.length} recibo${afectadas.length>1?'s':''} · registrado en Bancos`,'success');
+    const lista = (window._pagosRecibidosLista || []).filter(x => x.id !== ctx.reciboId);
+    window._pagosRecibidosLista = lista;
+    const socioUID = ctx.socioUID, pagoData = { id: pagoRef.id, ...pagoSocio };
+    pagosRecibidosAplicarCerrar();
+    pagosRecibidosRender(lista);
+    if (typeof alertasBandejaRefreshBadge === 'function') alertasBandejaRefreshBadge();
+    if (typeof dpPagosSyncAdeudo === 'function') { try { await dpPagosSyncAdeudo(socioUID); } catch(_) {} }
+    if (window._dpPagosRows) { try { await dpPagosLoad(true); } catch(_) {} }
+    try { pagoSocioVerComprobante(pagoData); } catch(_) {}
+  } catch (e) {
+    console.error('pagosRecibidosAplicarConfirmar ERROR:', e);
+    dpShowToast('No se pudo aplicar el pago: ' + (e.message||''), 'error');
+  } finally {
+    btn.disabled = false; btn.textContent = prevTxt;
+  }
 };
 
 // Reporte imprimible de antigüedad de adeudos (cartera vencida por socio)
@@ -7519,6 +8276,469 @@ window.dpAgingLoad = async function(force = false) {
     console.error('dpAgingLoad ERROR:', e);
     const wrap = document.getElementById('dp-aging-tabla');
     if (wrap) wrap.innerHTML = '<div style="text-align:center;padding:40px;color:#C0392B;">Error: '+esc(e.message)+'</div>';
+  }
+};
+
+// Reporte imprimible de socios morosos, filtrado por meses de adeudo (1, 2, 3 o 4+)
+window.dpPagosReporteMorosos = function() {
+  const rows = window._dpPagosRows;
+  if (!rows || !rows.length) { dpShowToast('Carga primero el estado de cuenta','info'); return; }
+  const sel = document.getElementById('dp-pagos-morosos-meses');
+  const minMeses = Math.max(1, parseInt(sel ? sel.value : '1', 10) || 1);
+
+  // Calcula meses de adeudo por socio: cada recibo mensual con saldo cuenta como un mes
+  const mesesAdeudo = row => {
+    const periodos = [];
+    let monto = 0;
+    (row.recibos || []).forEach(r => {
+      const st = r.__statusEx || getReciboStatusEx(r);
+      if (st === 'pagado' || st === 'condonado') return;
+      const total = Number(r.__totalCalc != null ? r.__totalCalc : (r.total || 0));
+      const saldo = Math.max(0, total - Number(r.montoPagado || 0));
+      if (saldo <= 0) return;
+      monto += saldo;
+      periodos.push({ mes: r.mes || '', anio: Number(r.anio || 0), saldo, st });
+    });
+    periodos.sort((a, b) => (a.anio - b.anio) || (MESES_ORD.indexOf(a.mes) - MESES_ORD.indexOf(b.mes)));
+    return { meses: periodos.length, monto, periodos };
+  };
+
+  // Solo socios activos (no bajas) que alcancen el umbral de meses
+  const data = rows
+    .filter(r => !r.esBaja)
+    .map(r => ({ row: r, ...mesesAdeudo(r) }))
+    .filter(d => d.meses >= minMeses)
+    .sort((a, b) => (b.meses - a.meses) || (b.monto - a.monto));
+
+  if (!data.length) {
+    dpShowToast(`No hay socios con ${minMeses} mes${minMeses > 1 ? 'es' : ''} o más de adeudo`, 'info');
+    return;
+  }
+
+  const win = window.open('', '_blank');
+  if (!win) { dpShowToast('Permite ventanas emergentes para el reporte','error'); return; }
+  const fmt = n => fmtMXN(n);
+  const hoy = new Date().toLocaleDateString('es-MX', { day:'2-digit', month:'long', year:'numeric' });
+  const totalMonto = data.reduce((s, d) => s + d.monto, 0);
+  const abrev = { Enero:'Ene', Febrero:'Feb', Marzo:'Mar', Abril:'Abr', Mayo:'May', Junio:'Jun', Julio:'Jul', Agosto:'Ago', Septiembre:'Sep', Octubre:'Oct', Noviembre:'Nov', Diciembre:'Dic' };
+  const etiqPeriodo = p => `${abrev[p.mes] || p.mes} ${String(p.anio).slice(-2)}`;
+
+  const cuerpo = data.map((d, i) => {
+    const r = d.row;
+    const nombre = r.nombre || `${r.apellido || ''} ${r.nombre || ''}`.trim() || 'Sin nombre';
+    const detalle = d.periodos.map(etiqPeriodo).join(' · ');
+    return `<tr>
+      <td class="idx">${i + 1}</td>
+      <td>${esc(nombre)}${r.numeroSocio ? `<div class="sub">#${esc(String(r.numeroSocio))}${r.tipo ? ' · ' + esc(r.tipo) : ''}</div>` : (r.tipo ? `<div class="sub">${esc(r.tipo)}</div>` : '')}</td>
+      <td class="num c">${d.meses}</td>
+      <td class="det">${esc(detalle)}</td>
+      <td class="num bold">${fmt(d.monto)}</td>
+    </tr>`;
+  }).join('');
+
+  const rango = minMeses >= 4 ? '4 meses o más' : `${minMeses} mes${minMeses > 1 ? 'es' : ''} o más`;
+
+  const html = `<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><title>Socios Morosos — Club de Leones Veracruz</title>
+  <style>
+    @page { size: letter portrait; margin: 12mm; }
+    * { box-sizing: border-box; }
+    body { font-family: 'DM Sans', Arial, sans-serif; color: #0D1B2A; font-size: 12px; line-height: 1.5; max-width: 900px; margin: auto; padding: 10px; }
+    h1 { font-family: 'Playfair Display', serif; font-size: 18px; text-align: center; margin: 0 0 2px; }
+    .sub-h { text-align: center; color: #8A9BB0; font-size: 11px; margin-bottom: 16px; }
+    .kpis { display: flex; gap: 10px; margin-bottom: 16px; }
+    .kpi { flex: 1; border: 1.5px solid #EDE8DF; border-radius: 8px; padding: 10px 12px; border-left-width: 4px; }
+    .kpi .v { font-family: 'Playfair Display', serif; font-size: 16px; font-weight: 800; }
+    .kpi .l { font-size: 9.5px; color: #8A9BB0; text-transform: uppercase; letter-spacing: .5px; }
+    table { width: 100%; border-collapse: collapse; }
+    th { background: #0D1B2A; color: #fff; text-align: left; padding: 7px 10px; font-size: 11px; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    th.num { text-align: right; }
+    td { padding: 6px 10px; border-bottom: 1px solid #eee; vertical-align: top; }
+    td.idx { color: #8A9BB0; text-align: right; width: 26px; }
+    td.num { text-align: right; font-variant-numeric: tabular-nums; }
+    td.bold { font-weight: 800; }
+    td.c { color: #C0392B; font-weight: 800; }
+    td.det { font-size: 10.5px; color: #5A6B80; }
+    .sub { font-size: 10px; color: #8A9BB0; }
+    tr.tot td { font-weight: 800; border-top: 2px solid #0D1B2A; background: #FBF7EF; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    .acciones { text-align: center; margin: 16px 0; }
+    .acciones button { padding: 9px 20px; background: #C9973A; color: #fff; border: none; border-radius: 7px; font-size: 13px; font-weight: 700; cursor: pointer; }
+    @media print { .acciones { display: none !important; } body { padding: 0; } tr { break-inside: avoid; } }
+  </style></head><body>
+    <div class="acciones"><button onclick="window.print()">🖨 Imprimir / Guardar PDF</button></div>
+    <h1>SOCIOS CON ADEUDO</h1>
+    <div class="sub-h">Club de Leones de Veracruz, A.C. &nbsp;·&nbsp; Filtro: ${esc(rango)} de adeudo &nbsp;·&nbsp; ${esc(hoy)}</div>
+
+    <div class="kpis">
+      <div class="kpi" style="border-left-color:#C0392B;"><div class="v" style="color:#C0392B;">${data.length}</div><div class="l">Socios en el reporte</div></div>
+      <div class="kpi" style="border-left-color:#0D1B2A;"><div class="v">${fmt(totalMonto)}</div><div class="l">Monto adeudado total</div></div>
+      <div class="kpi" style="border-left-color:#E67E22;"><div class="v" style="color:#E67E22;">${esc(rango)}</div><div class="l">Meses de adeudo</div></div>
+    </div>
+
+    <table>
+      <thead><tr><th class="idx"></th><th>Socio</th><th class="num">Meses</th><th>Meses que adeuda</th><th class="num">Monto</th></tr></thead>
+      <tbody>
+        ${cuerpo}
+        <tr class="tot"><td></td><td>TOTAL (${data.length} socio${data.length !== 1 ? 's' : ''})</td><td class="num">—</td><td></td><td class="num">${fmt(totalMonto)}</td></tr>
+      </tbody>
+    </table>
+
+    <scr`+`ipt>setTimeout(function(){try{window.focus();}catch(e){}},150);</scr`+`ipt>
+  </body></html>`;
+
+  win.document.write(html);
+  win.document.close();
+};
+
+// Lista de asistencia imprimible para la Junta de Directiva.
+// Los directivos aparecen prellenados en el orden jerárquico de sus cargos;
+// al final se agregan renglones en blanco para que socios no directivos se anoten.
+window.asistJuntaReporte = async function() {
+  try {
+    dpShowToast('Preparando lista de asistencia...', 'info');
+    const usuarios = await getCollectionCached('usuarios', 30000).catch(() => (window._adminMembersAll || window.allMembers || []));
+
+    // Orden y etiquetas de la directiva, según el formato oficial del club
+    // (Secretario antes que Tesorero, como en el acta impresa).
+    const ORDEN = [
+      'Presidente','Past Presidente','Vicepresidente','Segundo Vicepresidente',
+      'Secretario','Tesorero','Domador','Retorcedor',
+      'Vocal dos años','Vocal un año',
+      'Comité de Afiliación','Comité de Fondo de Reserva'
+    ];
+    const ETIQUETA = {
+      'Presidente': 'Presidente',
+      'Past Presidente': 'Past Presidente',
+      'Vicepresidente': 'Primer Vicepresidente',
+      'Segundo Vicepresidente': 'Segundo Vicepresidente',
+      'Secretario': 'Secretario',
+      'Tesorero': 'Tesorero',
+      'Domador': 'Domador',
+      'Retorcedor': 'Retorcedor',
+      'Vocal dos años': 'Vocal por dos años',
+      'Vocal un año': 'Vocal por un año',
+      'Comité de Afiliación': 'Comité de Afiliación',
+      'Comité de Fondo de Reserva': 'Comité de Fondo de Reserva'
+    };
+    const rank = c => { const i = ORDEN.indexOf(c); return i < 0 ? 999 : i; };
+    const etiq = c => ETIQUETA[c] || c;
+
+    // Solo cargos de la mesa directiva (excluye comités u otros cargos no directivos)
+    const PERMITIDOS = new Set([
+      'Presidente','Past Presidente','Vicepresidente','Segundo Vicepresidente',
+      'Secretario','Tesorero','Domador','Retorcedor','Vocal dos años','Vocal un año'
+    ]);
+
+    const directivos = (usuarios || [])
+      .filter(m => Array.isArray(m.cargos) && m.estado !== 'baja')
+      .map(m => {
+        const cargosOrd = [...m.cargos].filter(c => PERMITIDOS.has(c)).sort((a, b) => rank(a) - rank(b));
+        return {
+          nombre: `${m.nombre || ''} ${m.apellido || ''}`.trim() || 'Sin nombre',
+          cargos: cargosOrd,
+          _rank: cargosOrd.length ? rank(cargosOrd[0]) : 999
+        };
+      })
+      .filter(d => d.cargos.length > 0)
+      .sort((a, b) => (a._rank - b._rank) || a.nombre.localeCompare(b.nombre, 'es', { sensitivity: 'base' }));
+
+    if (!directivos.length) { dpShowToast('No hay socios con cargo de directiva asignado', 'info'); return; }
+
+    const win = window.open('', '_blank');
+    if (!win) { dpShowToast('Permite ventanas emergentes para el reporte', 'error'); return; }
+    // Periodo de la directiva: de julio a junio; cambia solo según el mes actual
+    const now = new Date();
+    const periodoIni = now.getMonth() >= 6 ? now.getFullYear() : now.getFullYear() - 1;
+    const periodoFin = periodoIni + 1;
+    const diaHoy = now.getDate();
+    const mesHoy = MESES_ORD[now.getMonth()];
+    const anioHoy = now.getFullYear();
+    const hoy = now.toLocaleDateString('es-MX', { day: '2-digit', month: 'long', year: 'numeric' });
+    const L = '<span class="l"></span>';        // línea corta para llenar a mano
+
+    // Cada fila: nombre en mayúsculas con el cargo debajo (número continuo entre hojas)
+    const filaDir = (d, n) => `<tr>
+        <td class="idx">${n}</td>
+        <td class="nom"><div class="n">${esc(d.nombre)}</div><div class="c">${esc(d.cargos.map(etiq).join(' · '))}</div></td>
+        <td class="firma"></td>
+      </tr>`;
+    const filaBlanco = n => `<tr>
+        <td class="idx">${n}</td>
+        <td class="nom"><div class="n">&nbsp;</div><div class="c">Socio</div></td>
+        <td class="firma"></td>
+      </tr>`;
+
+    // Corte entre hojas: hoja 1 termina en "Vocal por dos años"; hoja 2 arranca en
+    // "Vocal por un año" y sigue con los renglones "Socio" en blanco.
+    const RANK_CORTE = ORDEN.indexOf('Vocal dos años');
+    const grupo1 = directivos.filter(d => d._rank <= RANK_CORTE);
+    const grupo2 = directivos.filter(d => d._rank > RANK_CORTE);
+    const N_BLANCOS = 5;
+
+    let n = 0;
+    const filas1 = grupo1.map(d => filaDir(d, ++n)).join('');
+    let filas2 = grupo2.map(d => filaDir(d, ++n)).join('');
+    for (let k = 0; k < N_BLANCOS; k++) filas2 += filaBlanco(++n);
+
+    // Encabezado reutilizable (se repite en cada hoja)
+    const encabezado = `
+      <h1>CLUB DE LEONES DE VERACRUZ, A.C.</h1>
+      <div class="titulo2">ASISTENCIA A JUNTA DE MESA DIRECTIVA</div>
+      <div class="enc center">${L} JUNTA DE MESA DIRECTIVA <span class="fx">${periodoIni} – ${periodoFin}</span></div>
+      <div class="enc center">EL DÍA <span class="fx">${diaHoy}</span> DEL MES <span class="fx">${esc(mesHoy)}</span> DEL <span class="fx">${anioHoy}</span></div>
+      <div class="enc center enc-row" style="justify-content:center;">
+        <span>INICIO: ${L} HORAS</span>
+        <span>CONCLUYÓ: ${L} HORAS</span>
+      </div>
+      <div class="acta">ACTA ${L}</div>`;
+    const tablaHead = `<thead><tr><th class="idx">No.</th><th>Nombre</th><th class="firma">Firma</th></tr></thead>`;
+
+    const html = `<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><title>Lista de Asistencia — Junta de Directiva</title>
+    <style>
+      @page { size: letter portrait; margin: 12mm; }
+      * { box-sizing: border-box; }
+      body { font-family: 'DM Sans', Arial, sans-serif; color: #0D1B2A; font-size: 12px; line-height: 1.4; max-width: 720px; margin: auto; padding: 10px; }
+      h1 { font-family: 'Playfair Display', serif; font-size: 18px; text-align: center; margin: 0 0 3px; letter-spacing: .5px; }
+      .titulo2 { text-align: center; font-weight: 700; font-size: 13px; letter-spacing: 1px; margin-bottom: 10px; }
+      .l { display: inline-block; border-bottom: 1.1px solid #0D1B2A; min-width: 55px; height: 14px; margin: 0 3px; }
+      .enc { font-size: 12.5px; margin-bottom: 3px; }
+      .enc.center { text-align: center; }
+      .enc-row { display: flex; gap: 24px; flex-wrap: wrap; }
+      .acta { text-align: right; font-weight: 700; margin: 5px 0 10px; }
+      table { width: 100%; border-collapse: collapse; margin-top: 4px; }
+      th { background: #0D1B2A; color: #fff; text-align: left; padding: 8px 10px; font-size: 11px; letter-spacing: .5px; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+      th.idx { width: 36px; text-align: center; }
+      th.firma { width: 38%; }
+      td { padding: 4px 10px; border: 1px solid #C9C2B4; height: 34px; vertical-align: middle; }
+      td.idx { text-align: center; color: #6A798C; font-weight: 700; font-variant-numeric: tabular-nums; }
+      td.nom .n { font-weight: 700; text-transform: uppercase; font-size: 12px; letter-spacing: .3px; }
+      td.nom .c { font-size: 12px; color: #B8860B; font-weight: 800; text-transform: uppercase; letter-spacing: .4px; margin-top: 2px; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+      .fx { font-weight: 800; color: #0D1B2A; }
+      .acciones { text-align: center; margin: 16px 0; }
+      .acciones button { padding: 9px 20px; background: #C9973A; color: #fff; border: none; border-radius: 7px; font-size: 13px; font-weight: 700; cursor: pointer; }
+      .pie { margin-top: 14px; text-align: right; font-size: 10px; color: #8A9BB0; }
+      .hoja.salto { page-break-before: always; break-before: page; }
+      @media print { .acciones { display: none !important; } body { padding: 0; max-width: none; } tr { break-inside: avoid; } }
+    </style></head><body>
+      <div class="acciones"><button onclick="window.print()">🖨 Imprimir / Guardar PDF</button></div>
+
+      <div class="hoja">
+        ${encabezado}
+        <table>${tablaHead}<tbody>${filas1}</tbody></table>
+      </div>
+
+      <div class="hoja salto">
+        ${encabezado}
+        <table>${tablaHead}<tbody>${filas2}</tbody></table>
+        <div class="pie">Generado por el sistema · ${esc(hoy)}</div>
+      </div>
+
+      <scr`+`ipt>setTimeout(function(){try{window.focus();}catch(e){}},150);</scr`+`ipt>
+    </body></html>`;
+
+    win.document.write(html);
+    win.document.close();
+  } catch (e) {
+    console.error('asistJuntaReporte ERROR:', e);
+    dpShowToast('No se pudo generar la lista: ' + (e.message || e), 'error');
+  }
+};
+
+// Orden del Día imprimible para la Junta Mensual Ordinaria.
+// Autollena: presidente, número de junta, ejercicio (jul–jun), fecha de hoy y
+// el mes de los informes (siempre el mes ANTERIOR: en julio se lee junio).
+window.ordenDiaReporte = async function() {
+  try {
+    dpShowToast('Preparando el orden del día...', 'info');
+    const usuarios = await getCollectionCached('usuarios', 30000).catch(() => (window._adminMembersAll || window.allMembers || []));
+
+    const pres = (usuarios || []).find(m => Array.isArray(m.cargos) && m.cargos.includes('Presidente') && m.estado !== 'baja');
+    const presNombre = pres ? `${pres.nombre || ''} ${pres.apellido || ''}`.trim() : '';
+
+    const win = window.open('', '_blank');
+    if (!win) { dpShowToast('Permite ventanas emergentes para el reporte', 'error'); return; }
+
+    const now = new Date();
+    // Ejercicio jul–jun
+    const periodoIni = now.getMonth() >= 6 ? now.getFullYear() : now.getFullYear() - 1;
+    const periodoFin = periodoIni + 1;
+    // Fecha de hoy
+    const DIAS = ['DOMINGO', 'LUNES', 'MARTES', 'MIÉRCOLES', 'JUEVES', 'VIERNES', 'SÁBADO'];
+    const diaSem = DIAS[now.getDay()];
+    const dia = now.getDate();
+    const mesHoy = (MESES_ORD[now.getMonth()] || '').toUpperCase();
+    const anioHoy = now.getFullYear();
+    // Mes de los informes: el mes anterior al de la junta
+    const rep = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    const mesInforme = MESES_ORD[rep.getMonth()];
+    const anioInforme = rep.getFullYear();
+    const hoyTxt = now.toLocaleDateString('es-MX', { day: '2-digit', month: 'long', year: 'numeric' });
+
+    const presTxt = presNombre ? `C.L. ${esc(presNombre)}` : '<span class="l"></span>';
+    const inf = `${esc(mesInforme)} ${anioInforme}`;
+    const esJulio = now.getMonth() === 6;                 // julio: arranque de nueva directiva
+    const periodoAnt = `${periodoIni - 1}–${periodoIni}`; // ejercicio saliente
+    const periodoAct = `${periodoIni}–${periodoFin}`;     // ejercicio en funciones
+
+    let puntos;
+    if (esJulio) {
+      // En julio el informe de junio pertenece a la directiva SALIENTE: se ceden los
+      // atributos de mando al presidente saliente y, tras los informes, se restituyen
+      // solemnemente al presidente en funciones.
+      puntos = [
+        { t: 'Lista de asistencia y verificación del quórum legal.' },
+        { t: 'Lectura y, en su caso, aprobación del Orden del Día.' },
+        { t: `Apertura de la sesión por el Presidente ${presTxt}.` },
+        { t: 'Lectura del Código de Ética.' },
+        { t: `Cesión de los atributos de mando al Presidente del Ejercicio <b>${periodoAnt}</b>, para la presentación del informe final de su gestión.`, sol: true },
+        { t: `Lectura del acta anterior por el Secretario <span class="ej">(Ejercicio ${periodoAnt})</span>.` },
+        { t: `Informe del mes de <b>${inf}</b> por el Secretario <span class="ej">(Ejercicio ${periodoAnt})</span>.` },
+        { t: `Informe del mes de <b>${inf}</b> por el Tesorero <span class="ej">(Ejercicio ${periodoAnt})</span>.` },
+        { t: `Informe del mes de <b>${inf}</b> por el Presidente <span class="ej">(Ejercicio ${periodoAnt})</span>.` },
+        { t: `Restitución de los atributos de mando al Presidente en funciones del Ejercicio <b>${periodoAct}</b>, para la continuación de los trabajos de la presente sesión.`, sol: true },
+        { t: 'Asuntos Generales.' },
+        { t: 'Clausura.' }
+      ];
+    } else {
+      puntos = [
+        { t: 'Lista de asistencia y verificación del quórum legal.' },
+        { t: 'Lectura y, en su caso, aprobación del Orden del Día.' },
+        { t: `Apertura de la sesión por el Presidente ${presTxt}.` },
+        { t: 'Lectura del Código de Ética.' },
+        { t: 'Lectura del acta anterior por el Secretario.' },
+        { t: `Informe del mes de <b>${inf}</b> por el Secretario.` },
+        { t: `Informe del mes de <b>${inf}</b> por el Tesorero.` },
+        { t: `Informe del mes de <b>${inf}</b> por el Presidente.` },
+        { t: 'Asuntos Generales.' },
+        { t: 'Clausura.' }
+      ];
+    }
+    const lista = puntos.map(p => `<li${p.sol ? ' class="sol"' : ''}>${p.t}</li>`).join('');
+
+    const html = `<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><title>Orden del Día — Junta de Directiva</title>
+    <style>
+      @page { size: letter portrait; margin: 16mm; }
+      * { box-sizing: border-box; }
+      body { font-family: 'DM Sans', Arial, sans-serif; color: #0D1B2A; font-size: 13px; line-height: 1.5; max-width: 640px; margin: auto; padding: 10px; }
+      h1 { font-family: 'Playfair Display', serif; font-size: 20px; text-align: center; margin: 0 0 4px; letter-spacing: .5px; }
+      .club { text-align: center; font-weight: 700; font-size: 12px; letter-spacing: 1px; color: #8A6D2F; text-transform: uppercase; margin-bottom: 14px; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+      .cab { text-align: center; margin-bottom: 4px; }
+      .cab .j { font-family: 'Playfair Display', serif; font-size: 17px; font-weight: 800; }
+      .lj { display: inline-block; border-bottom: 1.5px solid #0D1B2A; min-width: 130px; height: 16px; vertical-align: baseline; }
+      .cab .e { font-size: 12px; letter-spacing: 1px; color: #5A6B80; margin-top: 2px; }
+      .cab .f { font-size: 13px; font-weight: 700; margin-top: 4px; letter-spacing: .5px; }
+      .titulo { text-align: center; font-family: 'Playfair Display', serif; font-size: 16px; font-weight: 800; letter-spacing: 2px; margin: 20px 0 10px; padding: 8px 0; border-top: 2px solid #0D1B2A; border-bottom: 2px solid #0D1B2A; }
+      ol { counter-reset: item; list-style: none; padding: 0; margin: 0; }
+      ol li { counter-increment: item; position: relative; padding: 9px 12px 9px 46px; border-bottom: 1px solid #EDE8DF; }
+      ol li::before { content: counter(item); position: absolute; left: 10px; top: 8px; width: 24px; height: 24px; background: #0D1B2A; color: #E8B84B; border-radius: 50%; text-align: center; line-height: 24px; font-size: 12px; font-weight: 800; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+      ol li.sol { font-style: italic; color: #6B4E12; background: #FBF7EF; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+      ol li.sol::before { background: #8A6D2F; }
+      .ej { color: #8A6D2F; font-weight: 600; }
+      .l { display: inline-block; border-bottom: 1.1px solid #0D1B2A; min-width: 180px; height: 14px; }
+      .pie { margin-top: 22px; text-align: right; font-size: 10px; color: #8A9BB0; }
+      .acciones { text-align: center; margin: 16px 0; }
+      .acciones button { padding: 9px 20px; background: #C9973A; color: #fff; border: none; border-radius: 7px; font-size: 13px; font-weight: 700; cursor: pointer; }
+      @media print { .acciones { display: none !important; } body { padding: 0; } ol li { break-inside: avoid; } }
+    </style></head><body>
+      <div class="acciones"><button onclick="window.print()">🖨 Imprimir / Guardar PDF</button></div>
+      <h1>CLUB DE LEONES DE VERACRUZ, A.C.</h1>
+      <div class="club">Club de Leones de Veracruz</div>
+
+      <div class="cab">
+        <div class="j"><span class="lj"></span> JUNTA MENSUAL ORDINARIA</div>
+        <div class="e">EJERCICIO ${periodoIni}–${periodoFin}</div>
+        <div class="f">${diaSem} ${dia} DE ${mesHoy} DE ${anioHoy}</div>
+      </div>
+
+      <div class="titulo">ORDEN DEL DÍA</div>
+
+      <ol>${lista}</ol>
+
+      <div class="pie">Generado por el sistema · ${esc(hoyTxt)}</div>
+
+      <scr`+`ipt>setTimeout(function(){try{window.focus();}catch(e){}},150);</scr`+`ipt>
+    </body></html>`;
+
+    win.document.write(html);
+    win.document.close();
+  } catch (e) {
+    console.error('ordenDiaReporte ERROR:', e);
+    dpShowToast('No se pudo generar el orden del día: ' + (e.message || e), 'error');
+  }
+};
+
+// Devuelve los integrantes de la mesa directiva, ordenados por jerarquía oficial,
+// con etiquetas legibles. Fuente compartida por el hub de Directiva.
+window.directivaMiembros = function(usuarios) {
+  const ORDEN = [
+    'Presidente','Past Presidente','Vicepresidente','Segundo Vicepresidente',
+    'Secretario','Tesorero','Domador','Retorcedor','Vocal dos años','Vocal un año'
+  ];
+  const ETIQUETA = {
+    'Past Presidente':'Past Presidente','Vicepresidente':'Primer Vicepresidente',
+    'Vocal dos años':'Vocal por dos años','Vocal un año':'Vocal por un año'
+  };
+  const rank = c => { const i = ORDEN.indexOf(c); return i < 0 ? 999 : i; };
+  const permit = new Set(ORDEN);
+  return (usuarios || [])
+    .filter(m => Array.isArray(m.cargos) && m.estado !== 'baja')
+    .map(m => {
+      const cargos = [...m.cargos].filter(c => permit.has(c)).sort((a,b) => rank(a) - rank(b));
+      return {
+        nombre: `${m.nombre || ''} ${m.apellido || ''}`.trim() || 'Sin nombre',
+        cargos: cargos.map(c => ETIQUETA[c] || c),
+        _rank: cargos.length ? rank(cargos[0]) : 999
+      };
+    })
+    .filter(d => d.cargos.length > 0)
+    .sort((a,b) => (a._rank - b._rank) || a.nombre.localeCompare(b.nombre, 'es', { sensitivity:'base' }));
+};
+
+// Hub de la Mesa Directiva: accesos a documentos + listado de integrantes.
+window.directivaLoad = async function() {
+  const now = new Date();
+  const periodoIni = now.getMonth() >= 6 ? now.getFullYear() : now.getFullYear() - 1;
+  const periodoFin = periodoIni + 1;
+
+  // Tarjetas de acceso a las herramientas de directiva
+  const card = (icon, titulo, sub, action, accent) => `
+    <div onclick="${action}" style="cursor:pointer;border:1.5px solid #EDE8DF;border-left:4px solid ${accent};border-radius:12px;padding:16px 18px;background:#fff;transition:box-shadow .15s,transform .15s;" onmouseover="this.style.boxShadow='0 8px 20px rgba(13,27,42,0.10)';this.style.transform='translateY(-2px)';" onmouseout="this.style.boxShadow='none';this.style.transform='none';">
+      <div style="font-size:26px;margin-bottom:8px;">${icon}</div>
+      <div style="font-weight:700;color:#0D1B2A;font-size:14px;">${titulo}</div>
+      <div style="font-size:12px;color:#8A9BB0;margin-top:3px;line-height:1.35;">${sub}</div>
+    </div>`;
+  const cardsEl = document.getElementById('dp-directiva-cards');
+  if (cardsEl) cardsEl.innerHTML =
+    card('🖊️', 'Asistencia de Junta', 'Lista de firmas para la junta de directiva', 'asistJuntaReporte()', '#C9973A') +
+    card('📋', 'Orden del Día', 'Agenda de la junta mensual ordinaria', 'ordenDiaReporte()', '#1A7A4A') +
+    card('📜', 'Informe del Secretario', 'Captura y consulta del informe mensual', "dpShow('sec-informe')", '#2980B9') +
+    card('📊', 'Informe del Tesorero', 'Estado financiero y estadísticas', "dpShow('estadisticas')", '#8E44AD') +
+    card('🔄', 'Cambio de Directiva', 'Acta de entrega y relevo de la mesa', "dpShow('cambio-directiva')", '#C0392B');
+
+  // Listado de integrantes
+  const listaEl = document.getElementById('dp-directiva-lista');
+  const subEl = document.getElementById('dp-directiva-sub');
+  const countEl = document.getElementById('dp-directiva-count');
+  try {
+    const usuarios = await getCollectionCached('usuarios', 30000).catch(() => (window._adminMembersAll || window.allMembers || []));
+    const dir = directivaMiembros(usuarios);
+    if (subEl) subEl.textContent = `Ejercicio ${periodoIni}–${periodoFin} · ${dir.length} integrante${dir.length !== 1 ? 's' : ''}`;
+    if (countEl) countEl.textContent = `${dir.length} cargo${dir.length !== 1 ? 's' : ''}`;
+    if (!listaEl) return;
+    if (!dir.length) {
+      listaEl.innerHTML = '<div style="text-align:center;padding:36px;color:#8A9BB0;">Aún no hay cargos de directiva asignados. Asígnalos desde el botón 🏅 Cargos en el directorio.</div>';
+      return;
+    }
+    listaEl.innerHTML = dir.map((d, i) => `
+      <div style="display:flex;align-items:center;gap:14px;padding:11px 8px;border-bottom:1px solid #F5F0E8;">
+        <div style="width:34px;height:34px;border-radius:50%;background:#0D1B2A;color:#E8B84B;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:13px;flex-shrink:0;">${i + 1}</div>
+        <div style="flex:1;min-width:0;">
+          <div style="font-weight:700;color:#0D1B2A;font-size:14px;">${esc(d.nombre)}</div>
+          <div style="font-size:12px;color:#B8860B;font-weight:700;text-transform:uppercase;letter-spacing:.3px;margin-top:1px;">${esc(d.cargos.join(' · '))}</div>
+        </div>
+      </div>`).join('');
+  } catch (e) {
+    console.error('directivaLoad ERROR:', e);
+    if (listaEl) listaEl.innerHTML = '<div style="text-align:center;padding:36px;color:#C0392B;">No se pudo cargar la directiva.</div>';
   }
 };
 
@@ -8124,6 +9344,7 @@ window.dpPagosGuardarPagoCompuesto = async function() {
       deudaAntes: dist.deudaAntes,
       deudaDespues: dist.deudaDespues,
       movimientoFinId: movId || null,
+      tesoreroNombre: (await rbGetTesorero()).nombre,
       creadoPorUid: window.currentUser?.uid || '',
       creadoPorNombre: ((window.currentUser?.nombre||'') + ' ' + (window.currentUser?.apellido||'')).trim(),
       creadoEn: new Date().toISOString(),
@@ -8192,7 +9413,7 @@ function pagoSocioBuildHTML(p, tesorero, showEstado) {
     ${saldoBox}
     <div class="rh-pie">
       <div class="rh-fecha">Veracruz, Ver. — ${fechaTexto}${p.referencia?` · Ref: ${p.referencia}`:''}</div>
-      <div class="rh-firma-bloque"><div class="rh-firma-inner"><div class="rh-firma-espacio"></div><div class="rh-firma-linea"><div class="rh-firma-nombre">${tesorero.nombre}</div><div class="rh-firma-cargo">Tesorero</div></div></div></div>
+      <div class="rh-firma-bloque"><div class="rh-firma-inner"><div class="rh-firma-espacio"></div><div class="rh-firma-linea"><div class="rh-firma-nombre">${p.tesoreroNombre || tesorero.nombre}</div><div class="rh-firma-cargo">Tesorero</div></div></div></div>
     </div>`;
 }
 
@@ -10137,6 +11358,8 @@ window.rbGuardar = async function() {
       dpShowToast('Recibo actualizado ✅','success');
     } else {
       data.creado=new Date().toISOString();
+      // Congelar el tesorero vigente al momento de emitir el recibo (no cambia si luego cambia el tesorero)
+      data.tesoreroNombre=(await rbGetTesorero()).nombre;
       const ref = await addDoc(collection(db,'recibos'),data);
       await logAuditoria('crear_recibo', { id: ref.id, socio: nombreSocio, mes, anio });
       dpShowToast('Recibo creado ✅','success');
@@ -10244,7 +11467,7 @@ function rbBuildReciboHTML(r,lineas,fmt,tesorero,showEstado) {
     <div class="rh-pie">
       <div class="rh-fecha">Veracruz, Ver. — ${fechaTexto}</div>
       ${r.loteNota?`<div style="font-size:6.5pt;color:#5A6A7A;font-style:italic;margin-top:1.5mm;line-height:1.3;">${r.loteNota}</div>`:''}
-      <div class="rh-firma-bloque"><div class="rh-firma-inner"><div class="rh-firma-espacio"></div><div class="rh-firma-linea"><div class="rh-firma-nombre">${tesorero.nombre}</div><div class="rh-firma-cargo">Tesorero</div></div></div></div>
+      <div class="rh-firma-bloque"><div class="rh-firma-inner"><div class="rh-firma-espacio"></div><div class="rh-firma-linea"><div class="rh-firma-nombre">${r.tesoreroNombre || tesorero.nombre}</div><div class="rh-firma-cargo">Tesorero</div></div></div></div>
     </div>`;
 }
 
@@ -10314,10 +11537,11 @@ const LOTE_FIELDS = [
 
 window._loteTarifas = null;
 // ════════════════════════════════════════════════════════════════
-//  PAGO ADELANTADO — pre-paga recibos por semestre o año.
-//  Crea/marca como pagados los recibos mensuales del periodo. El lote
-//  mensual salta a los socios que ya tienen ese mes (no duplica). Al
-//  agotarse los meses adelantados, el socio vuelve a los lotes.
+//  CUOTAS DEL SEMESTRE / AÑO — genera de una vez los recibos de un
+//  semestre o año como PENDIENTES de pago (no cobra: no registra
+//  ingreso). El destino (Banco/Caja) queda como método esperado del
+//  socio. El lote mensual salta a los socios que ya tienen ese mes
+//  (no duplica). El ingreso se registra cuando cada recibo se paga.
 // ════════════════════════════════════════════════════════════════
 function rbAdelantadoMeses(periodo, anio) {
   const sem1 = ['Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
@@ -10335,7 +11559,7 @@ window.rbAdelantadoAbrir = function() {
   const startYear = now.getMonth() >= 6 ? now.getFullYear() : now.getFullYear()-1;
   document.getElementById('rb-adel-anio').value = startYear;
   document.getElementById('rb-adel-periodo').value = 'sem1';
-  document.getElementById('rb-adel-destino').value = 'banco';
+  document.getElementById('rb-adel-descpct').value = '0';
   document.getElementById('rb-adel-fecha').value = now.toISOString().slice(0,10);
   document.getElementById('rb-adel-existente').style.display = 'none';
   document.getElementById('rb-modal-adelantado').style.display = 'flex';
@@ -10373,11 +11597,21 @@ window.rbAdelantadoPreview = async function() {
   const uid = document.getElementById('rb-adel-socio')?.value || '';
   const exDiv = document.getElementById('rb-adel-existente');
   if (uid) {
-    const ya = (window.allRecibos||[]).filter(r => r.socioUID===uid && r.pagoAdelantado && (r.estado||'').toLowerCase()==='pagado');
+    const ya = (window.allRecibos||[]).filter(r => r.socioUID===uid && r.pagoAdelantado && r.pagoAdelantadoGrupo);
     const grupos = [...new Set(ya.map(r => r.pagoAdelantadoGrupo).filter(Boolean))];
     if (ya.length && grupos.length) {
       exDiv.style.display = 'block';
-      exDiv.innerHTML = `⚠️ Este socio ya tiene <b>${ya.length}</b> mes(es) pagados por adelantado. <button onclick="rbAdelantadoRevertir('${esc(grupos[0])}')" style="margin-left:6px;padding:4px 10px;background:#fff;color:#C0392B;border:1.5px solid #C0392B;border-radius:7px;font-size:11px;font-weight:700;cursor:pointer;">↺ Revertir el adelantado existente</button>`;
+      const gruposInfo = grupos.map(gid => {
+        const rs = ya.filter(r => r.pagoAdelantadoGrupo === gid);
+        const per = rs[0]?.pagoAdelantadoPeriodo;
+        const perLbl = per==='sem1'?'Semestre Jul-Dic':per==='sem2'?'Semestre Ene-Jun':per==='anual'?'Anual Jul-Jun':'Periodo';
+        return `<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:6px;">
+          <span>⚠️ <b>${rs.length}</b> mes(es) · ${perLbl}</span>
+          <button onclick="rbAdelantadoReciboGlobal('${esc(gid)}')" style="padding:4px 10px;background:#0D1B2A;color:#E8B84B;border:none;border-radius:7px;font-size:11px;font-weight:700;cursor:pointer;">🖨️ Recibo global</button>
+          <button onclick="rbAdelantadoRevertir('${esc(gid)}')" style="padding:4px 10px;background:#fff;color:#C0392B;border:1.5px solid #C0392B;border-radius:7px;font-size:11px;font-weight:700;cursor:pointer;">↺ Revertir</button>
+        </div>`;
+      }).join('');
+      exDiv.innerHTML = `Este socio ya tiene cuotas del periodo generadas:${gruposInfo}`;
     } else { exDiv.style.display = 'none'; }
   } else { exDiv.style.display = 'none'; }
   if (!uid) { cont.innerHTML = '<div style="font-size:12px;color:#8A9BB0;">Elige un socio para configurar las cuotas.</div>'; return; }
@@ -10395,15 +11629,26 @@ window.rbAdelantadoPreview = async function() {
     <div style="margin-bottom:10px;"><div class="cd-lbl">Nombre del concepto "Extra" (⑦)</div><input type="text" id="rb-adel-c7label" value="${esc(data.c7label||'')}" placeholder="Ej: Aportación especial, Rifa…" class="cd-inp" style="max-width:280px;"></div>
     <div style="font-size:11px;color:#8A9BB0;margin-bottom:8px;">Edita los montos por mes y concepto. Las cuotas únicas (Coronación, Navidad) ponlas solo en el mes que correspondan; lo que dejes en 0 no se cobra.</div>
     <div style="overflow-x:auto;"><table style="border-collapse:collapse;min-width:100%;"><thead><tr>${th}</tr></thead><tbody>${rows}</tbody></table></div>
-    <div style="display:flex;justify-content:space-between;padding:10px 2px 0;margin-top:6px;border-top:2px solid #EDE8DF;font-weight:800;font-size:14px;"><span>Total a cobrar</span><span id="rb-adel-granttot" style="color:#1A7A4A;">$0.00</span></div>`;
+    <div style="border-top:2px solid #EDE8DF;margin-top:6px;padding-top:8px;">
+      <div style="display:flex;justify-content:space-between;font-size:12.5px;color:#5A6B7E;padding:2px 2px;"><span>Subtotal</span><span id="rb-adel-subtot">$0.00</span></div>
+      <div id="rb-adel-descrow" style="display:none;justify-content:space-between;font-size:12.5px;color:#1A7A4A;padding:2px 2px;"><span id="rb-adel-desclbl">Descuento</span><span id="rb-adel-desctot">−$0.00</span></div>
+      <div style="display:flex;justify-content:space-between;font-weight:800;font-size:14px;padding:6px 2px 0;"><span>Total a cobrar</span><span id="rb-adel-granttot" style="color:#1A7A4A;">$0.00</span></div>
+    </div>`;
   rbAdelantadoRecalc();
 };
 window.rbAdelantadoRecalc = function() {
+  const pct = Math.max(0, Math.min(100, parseFloat(document.getElementById('rb-adel-descpct')?.value) || 0));
   const byMi = {};
   document.querySelectorAll('.rb-adel-c').forEach(inp => { const mi = inp.dataset.mi; byMi[mi] = (byMi[mi]||0) + (Number(inp.value)||0); });
-  let grand = 0;
-  Object.entries(byMi).forEach(([mi,t]) => { const el = document.getElementById('rb-adel-rowtot-'+mi); if (el) el.textContent = fmtMXN(t); grand += t; });
-  const g = document.getElementById('rb-adel-granttot'); if (g) g.textContent = fmtMXN(grand);
+  let sub = 0, desc = 0;
+  Object.entries(byMi).forEach(([mi,t]) => { const el = document.getElementById('rb-adel-rowtot-'+mi); if (el) el.textContent = fmtMXN(t); sub += t; desc += Math.round(t*pct)/100; });
+  const total = Math.max(0, sub - desc);
+  const setTxt = (id,v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
+  setTxt('rb-adel-subtot', fmtMXN(sub));
+  setTxt('rb-adel-desctot', '−' + fmtMXN(desc));
+  setTxt('rb-adel-granttot', fmtMXN(total));
+  const dl = document.getElementById('rb-adel-desclbl'); if (dl) dl.textContent = 'Descuento' + (pct ? ' ('+pct+'%)' : '');
+  const dr = document.getElementById('rb-adel-descrow'); if (dr) dr.style.display = pct > 0 ? 'flex' : 'none';
 };
 function rbAdelantadoLeerGrid() {
   const uid = document.getElementById('rb-adel-socio')?.value || '';
@@ -10422,9 +11667,9 @@ window.rbAdelantadoGuardar = async function() {
   const btn = document.getElementById('rb-adel-btn');
   const uid = document.getElementById('rb-adel-socio')?.value || '';
   if (!uid) { dpShowToast('Elige un socio','error'); return; }
-  const destino = document.getElementById('rb-adel-destino')?.value || 'banco';
   const fecha = document.getElementById('rb-adel-fecha')?.value || new Date().toISOString().slice(0,10);
   const periodo = document.getElementById('rb-adel-periodo')?.value || 'sem1';
+  const descPct = Math.max(0, Math.min(100, parseFloat(document.getElementById('rb-adel-descpct')?.value) || 0));
   btn.disabled = true; btn.textContent = '⏳ Procesando...';
   try {
     const data = rbAdelantadoLeerGrid();            // lee los montos EDITADOS del grid
@@ -10432,58 +11677,142 @@ window.rbAdelantadoGuardar = async function() {
     if (!m) { dpShowToast('Socio no encontrado','error'); return; }
     const items = (data.items || []).filter(i => i.total > 0);  // ignora meses en 0
     if (!items.length) { dpShowToast('Captura al menos un monto','error'); return; }
-    const totalGeneral = items.reduce((s,i) => s + i.total, 0);
     const grupoId = 'adel_' + uid + '_' + Date.now();
     const periodoLbl = periodo==='sem1' ? 'Semestre Jul-Dic' : periodo==='sem2' ? 'Semestre Ene-Jun' : 'Anual Jul-Jun';
-    const concepto = `Cuotas adelantadas (${periodoLbl}) — ${(m.nombre||'')+' '+(m.apellido||'')}`.trim();
-    let movId = null;
-    try { movId = await finAutoMovimiento('ingreso', 'Cuotas de Socios', concepto, totalGeneral, fecha, 'recibo', destino, { pagoAdelantadoGrupo: grupoId }); } catch(e) { console.error('mov adelantado:', e); }
-    const base = { pagoAdelantado:true, pagoAdelantadoGrupo:grupoId, pagoAdelantadoPeriodo:periodo, estado:'pagado', fechaPago:fecha, movimientoDestino:destino, modificado:new Date().toISOString() };
-    const concs = i => ({ c1:i.c1,c2:i.c2,c3:i.c3,c4:i.c4,c5:i.c5,c6:i.c6,c6label:i.c6label,c7:i.c7,c7label:i.c7label, total:i.total, montoPagado:i.total });
+    const descLbl = descPct > 0 ? ('Descuento por pago ' + (periodo==='anual' ? 'anual' : 'semestral') + ' (' + descPct + '%)') : '';
+    // Recibos PENDIENTES: se genera la cuota del periodo como adeudo. NO se registra
+    // ingreso aquí — eso ocurre cuando el socio paga cada recibo. El descuento por pago
+    // semestral/anual se aplica a cada recibo (monto = subtotal × %) y queda reflejado.
+    const base = { pagoAdelantado:true, pagoAdelantadoGrupo:grupoId, pagoAdelantadoPeriodo:periodo, fechaEmision:fecha, fechaPago:null, movimientoFinId:null, modificado:new Date().toISOString() };
+    // concs aplica el descuento porcentual por recibo: descuento (monto) + total neto
+    const concs = i => {
+      const sub = i.total;
+      const desc = descPct > 0 ? Math.round(sub * descPct) / 100 : 0;
+      return { c1:i.c1,c2:i.c2,c3:i.c3,c4:i.c4,c5:i.c5,c6:i.c6,c6label:i.c6label,c7:i.c7,c7label:i.c7label, descuento:desc, descuentoLabel: desc>0?descLbl:'', total: Math.max(0, sub - desc) };
+    };
+    // Congelar el tesorero vigente al emitir los recibos del periodo
+    const tesNombreAdel=(await rbGetTesorero()).nombre;
+    let creados=0, actualizados=0, saltados=0, totalGeneral=0;
     for (const i of items) {
+      const cc = concs(i);
       if (i.existente) {
-        // Existente: actualiza conceptos a lo editado + márcalo pagado
-        await updateDoc(doc(db,'recibos',i.existente.id), { ...base, ...concs(i), pagoAdelantadoCreado:false });
+        const est = (i.existente.estado||'pendiente').toLowerCase();
+        // No tocar recibos ya cobrados (pagado/parcial): se dejan intactos
+        if (est === 'pagado' || est === 'parcial') { saltados++; continue; }
+        // Existente pendiente: actualiza conceptos a lo editado y márcalo del grupo
+        await updateDoc(doc(db,'recibos',i.existente.id), { ...base, ...cc, estado:'pendiente', montoPagado:0, pagoAdelantadoCreado:false });
+        actualizados++; totalGeneral += cc.total;
       } else {
         await addDoc(collection(db,'recibos'), {
           socioUID:uid, nombreSocio:(m.nombre||'')+' '+(m.apellido||''), apellidoSocio:m.apellido||'', numeroSocio:m.numeroSocio||'', subtipo:m.tipo||'socio',
-          mes:i.mes, anio:i.anio, ...concs(i),
-          descuento:0, descuentoLabel:'', notas:'', loteNota:'Pago adelantado ('+periodoLbl+')',
-          ...base, pagoAdelantadoCreado:true, movimientoFinId:null,
+          mes:i.mes, anio:i.anio, ...cc,
+          estado:'pendiente', montoPagado:0,
+          notas:'', loteNota:'Cuotas del periodo ('+periodoLbl+')', tesoreroNombre:tesNombreAdel,
+          ...base, pagoAdelantadoCreado:true,
           autorUID:window.currentUser?.uid||'', autorNombre:(window.currentUser?.nombre||'')+' '+(window.currentUser?.apellido||''), creado:new Date().toISOString(),
         });
+        creados++; totalGeneral += cc.total;
       }
     }
-    await logAuditoria('pago_adelantado', { socio:(m.nombre||'')+' '+(m.apellido||''), uid, periodo, total:totalGeneral, meses:items.length, grupoId });
-    dpShowToast(`✅ ${items.length} recibos cobrados por adelantado · ${fmtMXN(totalGeneral)}`,'success');
+    await logAuditoria('cobro_semestral', { socio:(m.nombre||'')+' '+(m.apellido||''), uid, periodo, descuentoPct:descPct, total:totalGeneral, creados, actualizados, saltados, grupoId });
+    let msg = `✅ ${creados+actualizados} recibos generados como pendientes · ${fmtMXN(totalGeneral)}`;
+    if (saltados) msg += ` · ${saltados} ya cobrado(s) sin cambios`;
+    dpShowToast(msg,'success');
     rbAdelantadoCerrar();
     await rbLoad();
   } catch(e) {
     console.error('rbAdelantadoGuardar:', e);
     dpShowToast('Error: '+e.message,'error');
-  } finally { btn.disabled = false; btn.textContent = '💳 Cobrar adelantado'; }
+  } finally { btn.disabled = false; btn.textContent = '🧾 Generar cuotas'; }
 };
 window.rbAdelantadoRevertir = async function(grupoId) {
   if (!grupoId) return;
-  if (!confirm('¿Revertir este pago adelantado completo?\n\nLos recibos creados por el adelantado se eliminarán, los que ya existían volverán a "pendiente", y el ingreso registrado se borrará.')) return;
+  if (!confirm('¿Revertir estas cuotas del periodo?\n\nLos recibos pendientes generados se eliminarán y los que ya existían se desvincularán del grupo. Los recibos que ya fueron pagados NO se tocan.')) return;
   try {
     const grupo = (window.allRecibos||[]).filter(r => r.pagoAdelantadoGrupo === grupoId);
+    let borrados=0, conservados=0;
     for (const r of grupo) {
-      if (r.pagoAdelantadoCreado) {
+      const est = (r.estado||'pendiente').toLowerCase();
+      if (r.pagoAdelantadoCreado && est === 'pendiente') {
         await deleteDoc(doc(db,'recibos',r.id));
+        borrados++;
       } else {
-        await updateDoc(doc(db,'recibos',r.id), { estado:'pendiente', montoPagado:0, fechaPago:null, pagoAdelantado:false, pagoAdelantadoGrupo:null, pagoAdelantadoPeriodo:null, pagoAdelantadoCreado:null, movimientoDestino:null, modificado:new Date().toISOString() });
+        // Pre-existente, o ya cobrado: se conserva; solo se quitan las marcas del grupo
+        await updateDoc(doc(db,'recibos',r.id), { pagoAdelantado:false, pagoAdelantadoGrupo:null, pagoAdelantadoPeriodo:null, pagoAdelantadoCreado:null, modificado:new Date().toISOString() });
+        conservados++;
       }
     }
+    // Compat: si un grupo de la versión anterior registró un ingreso, se elimina
     try {
       const movSnap = await getDocs(query(collection(db,'movimientos_financieros'), where('pagoAdelantadoGrupo','==',grupoId)));
       for (const md of movSnap.docs) await deleteDoc(doc(db,'movimientos_financieros',md.id));
     } catch(e) { console.error('revert mov:', e); }
-    await logAuditoria('revertir_pago_adelantado', { grupoId, recibos:grupo.length });
-    dpShowToast('Pago adelantado revertido','success');
+    await logAuditoria('revertir_cobro_semestral', { grupoId, borrados, conservados });
+    dpShowToast('Cuotas del periodo revertidas','success');
     rbAdelantadoCerrar();
     await rbLoad();
   } catch(e) { console.error('rbAdelantadoRevertir:', e); dpShowToast('Error al revertir: '+e.message,'error'); }
+};
+// Recibo GLOBAL: un solo recibo consolidado con todos los meses y conceptos de un grupo
+// (para socios con cuotas semestrales/anuales generadas). Imprimible en una hoja.
+window.rbAdelantadoReciboGlobal = async function(grupoId) {
+  if (!grupoId) return;
+  const grupo = (window.allRecibos||[]).filter(r => r.pagoAdelantadoGrupo === grupoId);
+  if (!grupo.length) { dpShowToast('No hay recibos en este grupo','error'); return; }
+  grupo.sort((a,b)=>{const ai=MESES_ORD.indexOf(a.mes)+(a.anio||0)*12;const bi=MESES_ORD.indexOf(b.mes)+(b.anio||0)*12;return ai-bi;});
+  const tesorero = await rbGetTesorero();
+  const fmt=(n)=>'$'+(Number(n)||0).toLocaleString('es-MX',{minimumFractionDigits:2,maximumFractionDigits:2});
+  const r0 = grupo[0];
+  const periodo = r0.pagoAdelantadoPeriodo || '';
+  const periodoLbl = periodo==='sem1' ? 'Semestre · Julio a Diciembre' : periodo==='sem2' ? 'Semestre · Enero a Junio' : periodo==='anual' ? 'Anual · Julio a Junio' : 'Cuotas del periodo';
+  const CC = [
+    {k:'c1', lbl:'Cuota Socio'},{k:'c2', lbl:'Cuota Dama'},{k:'c3', lbl:'Percápita'},
+    {k:'c4', lbl:'Coronación'},{k:'c5', lbl:'Navidad'},
+    {k:'c6', lbl:(grupo.find(r=>r.c6label)?.c6label)||'Mutualista'},
+    {k:'c7', lbl:(grupo.find(r=>r.c7label)?.c7label)||'Concepto extra'},
+  ].filter(c => grupo.some(r => Number(r[c.k]||0) > 0));
+  const hayDesc = grupo.some(r => Number(r.descuento||0) > 0);
+  const sum = k => grupo.reduce((s,r)=>s+(Number(r[k])||0),0);
+  const totalNeto = grupo.reduce((s,r)=>s+(Number(r.total)||0),0);
+  const totalDesc = sum('descuento');
+  const th = `<th class="l">Mes</th>` + CC.map(c=>`<th>${esc(c.lbl)}</th>`).join('') + (hayDesc?`<th>Descuento</th>`:'') + `<th>Total</th><th>Estado</th>`;
+  const rows = grupo.map(r=>{
+    const est=(r.estado||'pendiente').toLowerCase();
+    const estTxt = est==='pagado'?'✅ Pagado':est==='parcial'?'🟣 Parcial':'⏳ Pendiente';
+    return `<tr><td class="l">${esc(r.mes)} ${r.anio}</td>`+
+      CC.map(c=>`<td>${Number(r[c.k]||0)?fmt(r[c.k]):'—'}</td>`).join('')+
+      (hayDesc?`<td class="desc">${Number(r.descuento||0)?'−'+fmt(r.descuento):'—'}</td>`:'')+
+      `<td class="tot">${fmt(r.total)}</td><td class="est">${estTxt}</td></tr>`;
+  }).join('');
+  const foot = `<tr class="foot"><td class="l">Totales</td>`+
+    CC.map(c=>`<td>${fmt(sum(c.k))}</td>`).join('')+
+    (hayDesc?`<td class="desc">−${fmt(totalDesc)}</td>`:'')+
+    `<td class="tot">${fmt(totalNeto)}</td><td></td></tr>`;
+  const fechaTexto=new Date(r0.creado||Date.now()).toLocaleDateString('es-MX',{day:'2-digit',month:'long',year:'numeric'});
+  const descNota = hayDesc ? `<div style="font-size:8.5pt;color:#1A7A4A;margin:-2mm 0 4mm;">🏷️ ${esc((grupo.find(r=>r.descuentoLabel)?.descuentoLabel)||'Descuento aplicado')} · Total descuento: −${fmt(totalDesc)}</div>` : '';
+  const html = `<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><title>Recibo Global — ${esc(r0.nombreSocio||'')}</title>`+
+`<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;700;900&family=DM+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">`+
+`<style>*{margin:0;padding:0;box-sizing:border-box;}body{font-family:'DM Sans',sans-serif;background:#fff;color:#0D1B2A;-webkit-print-color-adjust:exact;print-color-adjust:exact;padding:14mm;}`+
+`.gh-header{display:flex;align-items:center;gap:10px;padding-bottom:5mm;border-bottom:2px solid #DEE0E6;margin-bottom:5mm;}.gh-header img{width:46px;height:46px;object-fit:contain;}`+
+`.gh-org{font-family:'Playfair Display',serif;font-size:15pt;font-weight:700;}.gh-sub{font-family:'Playfair Display',serif;font-size:10pt;color:#5A6A7A;margin-top:2px;}.gh-badge{margin-left:auto;text-align:right;font-size:8pt;color:#5A6A7A;line-height:1.5;}`+
+`.gh-socio{background:#F7F3EC;border-radius:7px;padding:4mm 5mm;margin-bottom:5mm;display:flex;justify-content:space-between;align-items:flex-end;}.gh-socio-lbl{font-size:7pt;font-weight:700;color:#8A9BB0;letter-spacing:.8px;text-transform:uppercase;}.gh-socio-nombre{font-family:'Playfair Display',serif;font-size:14pt;font-weight:700;}.gh-socio-num{font-size:9pt;color:#5A6A7A;}`+
+`table{width:100%;border-collapse:collapse;font-size:8.5pt;margin-bottom:5mm;}th{background:#0D1B2A;color:#fff;font-size:7pt;text-transform:uppercase;letter-spacing:.4px;padding:2.5mm 2mm;text-align:right;-webkit-print-color-adjust:exact;print-color-adjust:exact;}th.l{text-align:left;}td{padding:2mm;text-align:right;border-bottom:0.5px solid #EDE8DF;white-space:nowrap;}td.l{text-align:left;font-weight:600;}td.tot{font-weight:700;}td.desc{color:#1A7A4A;}td.est{text-align:center;font-size:7.5pt;}tr.foot td{border-top:1.5px solid #0D1B2A;border-bottom:none;font-weight:700;background:#F7F3EC;-webkit-print-color-adjust:exact;print-color-adjust:exact;}`+
+`.gh-total{background:linear-gradient(135deg,#0D1B2A,#1A2E42);border-radius:8px;padding:4mm 6mm;display:flex;justify-content:space-between;align-items:center;margin-bottom:6mm;-webkit-print-color-adjust:exact;print-color-adjust:exact;}.gh-total-lbl{color:rgba(255,255,255,0.7);font-size:9pt;font-weight:600;text-transform:uppercase;letter-spacing:.8px;}.gh-total-val{font-family:'Playfair Display',serif;font-size:18pt;font-weight:900;color:#E8B84B;}`+
+`.gh-pie{margin-top:8mm;display:flex;justify-content:space-between;align-items:flex-end;}.gh-fecha{font-size:8pt;color:#8A9BB0;}.gh-firma{width:60mm;text-align:center;}.gh-firma-linea{border-top:1px solid #0D1B2A;padding-top:2mm;margin-top:14mm;}.gh-firma-nombre{font-size:9pt;font-weight:700;}.gh-firma-cargo{font-size:7pt;color:#5A6A7A;text-transform:uppercase;letter-spacing:.5px;}`+
+`@page{size:letter portrait;margin:0;}@media print{body{padding:12mm;}}</style></head><body>`+
+`<div class="gh-header"><img src="https://res.cloudinary.com/dgfkkwypy/image/upload/v1773701524/Logo_leones_veracruz_yfyhgg.png"><div><div class="gh-org">Club de Leones de Veracruz A.C.</div><div class="gh-sub">Recibo Global de Cuotas — ${periodoLbl}</div></div><div class="gh-badge">${grupo.length} meses<br>${esc(fechaTexto)}</div></div>`+
+`<div class="gh-socio"><div><div class="gh-socio-lbl">Socio</div><div class="gh-socio-nombre">${esc(r0.nombreSocio||'')}</div></div>${r0.numeroSocio?`<div class="gh-socio-num">N° de Socio: <strong>#${esc(r0.numeroSocio)}</strong></div>`:''}</div>`+
+`<table><thead><tr>${th}</tr></thead><tbody>${rows}${foot}</tbody></table>`+
+descNota+
+`<div class="gh-total"><span class="gh-total-lbl">Total del periodo</span><span class="gh-total-val">${fmt(totalNeto)}</span></div>`+
+`<div class="gh-pie"><div class="gh-fecha">Veracruz, Ver. — ${esc(fechaTexto)}</div><div class="gh-firma"><div class="gh-firma-linea"><div class="gh-firma-nombre">${esc(r0.tesoreroNombre||tesorero.nombre)}</div><div class="gh-firma-cargo">Tesorero</div></div></div></div>`+
+`</body></html>`;
+  const win = window.open('','_blank');
+  if (!win) { dpShowToast('Permite las ventanas emergentes para imprimir','error'); return; }
+  win.document.write(html);
+  win.document.close();
+  setTimeout(()=>{ try{win.print();}catch(e){} },700);
+  try { await logAuditoria('recibo_global_semestral', { grupoId, socio:r0.nombreSocio, meses:grupo.length, total:totalNeto }); } catch(e){}
 };
 
 window.rbOpenLote = function() {
@@ -10618,6 +11947,8 @@ window.loteGenerar=async function(){
   btn.textContent='Generando...';btn.disabled=true;
   try {
     let creados=0, saltados=0;
+    // Congelar el tesorero vigente al momento de generar el lote
+    const tesNombreLote=(await rbGetTesorero()).nombre;
     for(const[uid,pid]of asignaciones){
       const p=window.lotePlantillas.find(x=>x.id===pid);if(!p)continue;
       const m=(window.allMembers||[]).find(x=>x.uid===uid);if(!m)continue;
@@ -10637,7 +11968,7 @@ window.loteGenerar=async function(){
       const descv = esViuda ? 0 : (parseFloat(p.descuento)||0);
       const descLblv = esViuda ? '' : (p.descuentoLabel||'');
       const totalV = esViuda ? Number(p.c6||0) : totalLote;
-      await addDoc(collection(db,'recibos'),{socioUID:uid,nombreSocio:m.nombre+' '+m.apellido,apellidoSocio:m.apellido||'',numeroSocio:m.numeroSocio||'',subtipo:m.tipo||'socio',mes,anio,c1:c1v,c2:c2v,c3:c3v,c4:c4v,c5:c5v,c6:p.c6||0,c6label:p.c6label||'',c7:c7v,c7label:c7lblv,descuento:descv,descuentoLabel:descLblv,notas:'',loteNota:p.nota||'',total:totalV,estado:'pendiente',plantilla:p.nombre,autorUID:window.currentUser?.uid||'',autorNombre:(window.currentUser?.nombre||'')+' '+(window.currentUser?.apellido||''),creado:new Date().toISOString(),modificado:new Date().toISOString()});
+      await addDoc(collection(db,'recibos'),{socioUID:uid,nombreSocio:m.nombre+' '+m.apellido,apellidoSocio:m.apellido||'',numeroSocio:m.numeroSocio||'',subtipo:m.tipo||'socio',mes,anio,c1:c1v,c2:c2v,c3:c3v,c4:c4v,c5:c5v,c6:p.c6||0,c6label:p.c6label||'',c7:c7v,c7label:c7lblv,descuento:descv,descuentoLabel:descLblv,notas:'',loteNota:p.nota||'',total:totalV,estado:'pendiente',plantilla:p.nombre,tesoreroNombre:tesNombreLote,autorUID:window.currentUser?.uid||'',autorNombre:(window.currentUser?.nombre||'')+' '+(window.currentUser?.apellido||''),creado:new Date().toISOString(),modificado:new Date().toISOString()});
       creados++;
     }
     await logAuditoria('generar_lote_recibos', { mes, anio, cantidad: creados, saltados });
@@ -12759,6 +14090,10 @@ window.rsvOnSalonChange = function() {
       aviso.style.display = 'none';
     }
   }
+  // Proponer el valor de "afecta estacionamiento" según el salón elegido.
+  // En edición, rsvAbrirModalReserva sobreescribe esto con el valor guardado de la reserva.
+  const estChk = document.getElementById('rsv-reserva-afecta-est');
+  if (estChk) estChk.checked = !!s?.afectaEstacionamiento;
   rsvCalcSaldo();
   rsvCheckConflicto();
 };
@@ -12892,6 +14227,8 @@ window.rsvAbrirModalReserva = function(id) {
   // (el usuario explicitó: solo se edita desde el catálogo).
   if (r?.salonId) rsvOnSalonChange();
   else { rsvCalcSaldo(); rsvOnSalonChange(); /* limpia aviso si aplica */ }
+  // En edición, respetar el valor guardado de la reserva (rsvOnSalonChange propuso el del salón).
+  if (r) document.getElementById('rsv-reserva-afecta-est').checked = !!r.afectaEstacionamiento;
   rsvOnEstadoChange();
   document.getElementById('rsv-reserva-modal').style.display = 'flex';
   // Solo el cambio de FECHA dispara el chequeo de conflicto adicional.
@@ -12965,7 +14302,7 @@ window.rsvGuardarReserva = async function() {
     const data = {
       salonId,
       salonNombre: salon?.nombre || '',
-      afectaEstacionamiento: !!salon?.afectaEstacionamiento,
+      afectaEstacionamiento: document.getElementById('rsv-reserva-afecta-est').checked,
       rubroNombre: salon?.rubroNombre || '',
       fecha, horaInicio: horaIni, horaFin: horaFin,
       evento, anfitrion, contacto,
@@ -16391,7 +17728,7 @@ window.finCategoriaPDF = function() {
 
 // IMPORTANTE: APP_VERSION debe coincidir con "version" en version.json y con
 // VERSION en sw.js. Bumpear las 3 juntas o el banner de update queda pegado.
-const APP_VERSION = '20260630-007';
+const APP_VERSION = '20260708-009';
 
 // Referencia al SW en espera (si existe), compartida entre ambas rutas de actualización
 window._pendingSW = null;
@@ -16699,13 +18036,37 @@ body.modal-open { overflow:hidden; }
 .doc-content .divisa-item:last-child { border-bottom:none; }
 .doc-content .divisa-bullet { width:6px; height:6px; border-radius:50%; background:var(--gold); flex-shrink:0; margin-top:6px; }
 .recursos-section-label { font-size:10px; font-weight:700; color:var(--text-muted); letter-spacing:1px; text-transform:uppercase; margin-bottom:8px; margin-top:4px; }
+/* ── Roster (Presidentes / Reinas) ── */
+.roster-intro { text-align:center; padding:12px 8px 14px; }
+.roster-intro .ri-range { font-family:'Playfair Display',serif; font-weight:700; color:var(--gold); font-size:20px; letter-spacing:1px; }
+.roster-intro .ri-sub { font-size:11px; color:var(--text-muted); margin-top:3px; letter-spacing:.5px; }
+.roster-intro .ri-rule { width:56px; height:2px; background:linear-gradient(90deg,transparent,var(--gold),transparent); margin:10px auto 0; }
+.roster { display:flex; flex-direction:column; }
+.roster-row { display:flex; align-items:center; gap:10px; padding:9px 4px; border-bottom:1px solid #F2ECE1; }
+.roster-row:last-child { border-bottom:none; }
+.roster-num { width:24px; flex-shrink:0; text-align:right; font-size:10.5px; font-weight:700; color:var(--gold); font-variant-numeric:tabular-nums; opacity:.75; }
+.roster-main { flex:1; min-width:0; }
+.roster-name { font-size:13px; font-weight:600; color:var(--navy); line-height:1.25; }
+.roster-alias { font-size:11px; color:var(--gold); font-style:italic; margin-top:1px; }
+.roster-year { flex-shrink:0; font-size:11px; font-weight:700; color:#6B7C8F; font-variant-numeric:tabular-nums; background:rgba(201,151,58,0.09); padding:3px 9px; border-radius:999px; white-space:nowrap; }
+.roster-row.current { background:rgba(201,151,58,0.12); border-radius:10px; border-bottom:none; margin:2px 0; padding:10px 8px; }
+.roster-row.current .roster-name { color:var(--gold-dark,#9A6F1E); }
+.roster-row.current .roster-year { background:var(--gold); color:#fff; }
+.roster-row.current .roster-num { opacity:1; }
+/* ── Galería admin ── */
+.gal-tab { flex:1; padding:10px; border-radius:12px; border:1px solid #E8E0D4; background:var(--white); font-size:13px; font-weight:600; color:#6B7C8F; cursor:pointer; }
+.gal-tab.active { background:var(--navy); color:var(--white); border-color:var(--navy); }
+.gal-add-btn { background:linear-gradient(135deg,var(--gold-light),var(--gold)); color:#fff; border:none; border-radius:10px; padding:8px 16px; font-size:13px; font-weight:700; cursor:pointer; }
+.gal-adm-row { display:flex; align-items:center; gap:10px; padding:10px 4px; border-bottom:1px solid #F2ECE1; }
+.gal-icon-btn { background:#F4EFE6; border:none; border-radius:8px; width:34px; height:34px; font-size:15px; cursor:pointer; flex-shrink:0; }
+.gal-icon-btn.danger { background:rgba(214,69,69,0.1); }
 .bottom-nav { position:fixed; bottom:0; left:0; right:0; height:80px; background:var(--white); border-top:1px solid #F0EBE0; display:flex; align-items:flex-start; justify-content:space-around; padding-top:10px; box-shadow:0 -4px 20px rgba(13,27,42,0.08); z-index:100; }
 .nav-item { display:flex; flex-direction:column; align-items:center; gap:3px; cursor:pointer; padding:4px 10px; border-radius:10px; position:relative; }
 .nav-icon { font-size:20px; line-height:1; }
 .nav-label { font-size:10px; font-weight:600; color:var(--text-muted); }
 .nav-item.active .nav-label { color:var(--navy); }
 .nav-badge { position:absolute; top:0; right:2px; background:var(--danger); color:var(--white); font-size:9px; font-weight:700; width:16px; height:16px; border-radius:50%; display:none; align-items:center; justify-content:center; }
-.toast { position:fixed; bottom:90px; left:50%; transform:translateX(-50%) translateY(10px); background:var(--navy); color:var(--white); padding:11px 18px; border-radius:10px; font-size:13px; font-weight:500; opacity:0; transition:all 0.3s; pointer-events:none; white-space:nowrap; z-index:999; }
+.toast { position:fixed; bottom:90px; left:50%; transform:translateX(-50%) translateY(10px); background:var(--navy); color:var(--white); padding:11px 18px; border-radius:10px; font-size:13px; font-weight:500; opacity:0; transition:all 0.3s; pointer-events:none; white-space:nowrap; z-index:100000; }
 .toast.show { opacity:1; transform:translateX(-50%) translateY(0); }
 .toast.success { background:var(--success); }
 .toast.error { background:var(--danger); }
@@ -17161,6 +18522,10 @@ body.damas-theme .filter-tab-active { background:rgba(139,74,107,0.15); color:#5
         <div class="inicio-card-icon">🧾</div>
         <div class="inicio-card-label">Mi Recibo</div>
       </div>
+      <div id="inicio-cuenta-card" class="inicio-card" onclick="abrirDatosBanco()" style="display:none;">
+        <div class="inicio-card-icon">🏦</div>
+        <div class="inicio-card-label">Cuenta del club</div>
+      </div>
       <div id="inicio-weather-card" class="inicio-card" style="display:none;gap:5px;padding:18px 12px;">
         <div id="wx-emoji" style="font-size:36px;line-height:1;">🌤️</div>
         <div id="wx-temp" style="font-family:'Playfair Display',serif;font-size:24px;font-weight:900;color:#0D1B2A;line-height:1;">--°C</div>
@@ -17201,15 +18566,12 @@ body.damas-theme .filter-tab-active { background:rgba(139,74,107,0.15); color:#5
         </div>
         <div class="damas-home-arrow">›</div>
       </div>
-      <!-- Botana del Viernes (solo tipo socio) -->
-      <div id="inicio-botana-card" class="inicio-card inicio-card-botana" onclick="goTo('screen-botana')" style="display:none;">
-        <div class="inicio-card-icon">🍺</div>
-        <div class="botana-home-text">
-          <div class="botana-home-sup">Próxima botana de viernes</div>
-          <div id="inicio-botana-nombre" class="botana-home-nom">Sin asignación</div>
-          <div id="inicio-botana-fecha" class="botana-home-fch"></div>
-        </div>
-        <div class="botana-home-arrow">›</div>
+      <!-- Botana del Viernes (solo tipo socio) — tarjeta cuadrada -->
+      <div id="inicio-botana-card" class="inicio-card" onclick="goTo('screen-botana')" style="display:none;flex-direction:column;gap:6px;padding:18px 10px;">
+        <div style="font-size:34px;line-height:1;">🍺</div>
+        <div style="font-size:10px;font-weight:700;color:#8A6D2B;letter-spacing:.8px;text-transform:uppercase;text-align:center;">Botana del viernes</div>
+        <div id="inicio-botana-nombre" style="font-size:13px;font-weight:700;color:var(--navy);text-align:center;line-height:1.3;">Sin asignación</div>
+        <div id="inicio-botana-fecha" style="font-size:11px;color:var(--text-muted);text-align:center;"></div>
       </div>
       <!-- Fila 4: Administración (solo admin / subadmin) -->
       <div id="inicio-admin-btn" class="inicio-card inicio-card-admin" onclick="goTo('screen-admin')" style="display:none;">
@@ -17337,7 +18699,10 @@ body.damas-theme .filter-tab-active { background:rgba(139,74,107,0.15); color:#5
 <div id="screen-mis-recibos" class="screen">
   <div class="status-bar dark"></div>
   <div class="misrec-header">
-    <button class="btn-inicio" onclick="goTo('screen-inicio')">🏠 Inicio</button>
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;">
+      <button class="btn-inicio" onclick="goTo('screen-inicio')">🏠 Inicio</button>
+      <button onclick="abrirDatosBanco()" style="display:inline-flex;align-items:center;gap:6px;background:rgba(201,151,58,0.22);border:1.5px solid rgba(232,184,75,0.55);border-radius:50px;padding:8px 15px;color:#E8B84B;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;cursor:pointer;-webkit-tap-highlight-color:transparent;">🏦 Cuenta del club</button>
+    </div>
     <div class="misrec-title">🧾 Mis Recibos</div>
   </div>
   <div class="misrec-body">
@@ -18096,9 +19461,70 @@ body.damas-theme .filter-tab-active { background:rgba(139,74,107,0.15); color:#5
         </div>
       </div>
     </div>
+    <div class="recursos-section-label" style="margin-top:6px;">Galería Histórica</div>
+    <div class="doc-card">
+      <div class="doc-header" onclick="toggleDoc('doc-presidentes')">
+        <div class="doc-emoji">🦁</div>
+        <div class="doc-title-wrap"><div class="doc-title">Presidentes del Club</div><div class="doc-subtitle" id="galeria-sub-presidentes">Cargando…</div></div>
+        <span id="icon-doc-presidentes" class="doc-icon">▼</span>
+      </div>
+      <div id="doc-presidentes" class="doc-body">
+        <div class="doc-content" style="padding-top:0;">
+          <div class="roster-intro">
+            <div class="ri-range" id="galeria-range-presidentes">Presidentes</div>
+            <div class="ri-sub">PRESIDENTES · CLUB DE LEONES DE VERACRUZ, A.C.</div>
+            <div class="ri-rule"></div>
+          </div>
+          <div class="roster" id="roster-presidentes">
+            <div style="text-align:center;padding:18px;color:#8A9BB0;font-size:12px;">Cargando…</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="doc-card">
+      <div class="doc-header" onclick="toggleDoc('doc-reinas')">
+        <div class="doc-emoji">👑</div>
+        <div class="doc-title-wrap"><div class="doc-title">Reinas del Club</div><div class="doc-subtitle" id="galeria-sub-reinas">Cargando…</div></div>
+        <span id="icon-doc-reinas" class="doc-icon">▼</span>
+      </div>
+      <div id="doc-reinas" class="doc-body">
+        <div class="doc-content" style="padding-top:0;">
+          <div class="roster-intro">
+            <div class="ri-range" id="galeria-range-reinas">Reinas</div>
+            <div class="ri-sub">REINAS · CLUB DE LEONES DE VERACRUZ, A.C.</div>
+            <div class="ri-rule"></div>
+          </div>
+          <div class="roster" id="roster-reinas">
+            <div style="text-align:center;padding:18px;color:#8A9BB0;font-size:12px;">Cargando…</div>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
 </div>
 
+
+<!-- ══ MODAL GALERÍA (alta/edición presidente o reina) ══ -->
+<div id="modal-galeria" class="modal-overlay" onclick="if(event.target===this)galeriaCloseModal()" style="z-index:10050;align-items:center;">
+  <div class="modal-sheet">
+    <div class="modal-handle"></div>
+    <div id="gal-modal-title" class="modal-title">＋ Nuevo presidente</div>
+    <input type="hidden" id="gal-modal-id">
+    <input type="hidden" id="gal-modal-tipo">
+    <label class="form-label">Nombre completo *</label>
+    <input id="gal-modal-nombre" class="form-input" placeholder="Ej. JUAN PÉREZ LÓPEZ" maxlength="120" style="margin-bottom:12px;">
+    <div id="gal-alias-wrap" style="display:none;">
+      <label class="form-label">Nombre de reina</label>
+      <input id="gal-modal-alias" class="form-input" placeholder="Ej. MARÍA I" maxlength="80" style="margin-bottom:12px;">
+    </div>
+    <label class="form-label">Periodo * (ej. 2024-2025)</label>
+    <input id="gal-modal-periodo" class="form-input" inputmode="numeric" placeholder="2024-2025" maxlength="9" style="margin-bottom:4px;">
+    <div class="modal-actions">
+      <button class="modal-btn-cancel" onclick="galeriaCloseModal()">Cancelar</button>
+      <button id="gal-modal-save" class="modal-btn-save" onclick="galeriaSave()">Guardar</button>
+    </div>
+  </div>
+</div>
 
 <!-- ══ MODAL ESTADO DE CUENTA ══ -->
 <div id="dp-modal-estado-cuenta" class="modal-overlay" style="z-index:10000;" onclick="if(event.target===this)dpCloseEstadoCuenta()">
@@ -18107,6 +19533,34 @@ body.damas-theme .filter-tab-active { background:rgba(139,74,107,0.15); color:#5
     <div id="dp-estado-cuenta-title" class="modal-title">Estado de cuenta</div>
     <div id="dp-estado-cuenta-body"></div>
     <div class="modal-actions"><button class="modal-btn-cancel" onclick="dpCloseEstadoCuenta()">Cerrar</button></div>
+  </div>
+</div>
+
+<!-- ══ MODAL PAGOS RECIBIDOS (revisión de comprobantes de socios) ══ -->
+<div id="dp-modal-pagos-recibidos" class="modal-overlay" style="z-index:10001;" onclick="if(event.target===this)pagosRecibidosCerrar()">
+  <div class="modal-sheet" style="max-width:720px;width:min(720px,94vw);">
+    <div class="modal-handle"></div>
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:4px;">
+      <div class="modal-title" style="margin:0;">💸 Pagos recibidos por revisar</div>
+      <span id="dp-pagos-recibidos-count" style="font-size:12px;font-weight:700;color:#E67E22;background:rgba(230,126,34,0.1);padding:3px 10px;border-radius:999px;"></span>
+    </div>
+    <div style="font-size:12.5px;color:#8A9BB0;margin-bottom:16px;">Comprobantes de transferencia enviados por los socios. Verifica el comprobante y elige cómo aplicar el pago (a un recibo específico o a su deuda total); se registrará como ingreso a <b>Bancos</b>.</div>
+    <div id="dp-pagos-recibidos-body" style="max-height:64vh;overflow:auto;"></div>
+    <div class="modal-actions"><button class="modal-btn-cancel" onclick="pagosRecibidosCerrar()">Cerrar</button></div>
+  </div>
+</div>
+
+<!-- ══ MODAL APLICAR PAGO DE COMPROBANTE (recibo específico / deuda total) ══ -->
+<div id="dp-modal-aplicar-pago" class="modal-overlay" style="z-index:10002;" onclick="if(event.target===this)pagosRecibidosAplicarCerrar()">
+  <div class="modal-sheet" style="max-width:620px;width:min(620px,94vw);">
+    <div class="modal-handle"></div>
+    <div id="dp-ap-title" class="modal-title" style="margin-bottom:4px;">Aplicar pago</div>
+    <div style="font-size:12.5px;color:#8A9BB0;margin-bottom:14px;">Elige cómo aplicar el pago del comprobante. Se registrará como ingreso a <b>Bancos</b>.</div>
+    <div id="dp-ap-body"></div>
+    <div class="modal-actions">
+      <button class="modal-btn-cancel" onclick="pagosRecibidosAplicarCerrar()">Cancelar</button>
+      <button id="dp-ap-save" class="modal-btn-save" style="background:linear-gradient(135deg,#1A7A4A,#15623C);color:#fff;" onclick="pagosRecibidosAplicarConfirmar()">✅ Confirmar y registrar</button>
+    </div>
   </div>
 </div>
 
@@ -18459,12 +19913,14 @@ body.damas-theme .filter-tab-active { background:rgba(139,74,107,0.15); color:#5
     </div>
     <div style="padding:20px 20px 8px;font-size:9px;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:rgba(255,255,255,0.25);">Principal</div>
     <div class="dp-nav" data-sec="dashboard" onclick="dpShow('dashboard')">📊 &nbsp;Dashboard</div>
+    <div class="dp-nav" data-sec="directiva" onclick="dpShow('directiva')">🦁 &nbsp;Directiva</div>
     <div class="dp-nav" data-sec="alertas-bandeja" onclick="dpShow('alertas-bandeja')" id="nav-alertas-bandeja">🔔 &nbsp;Bandeja de Alertas <span id="nav-alertas-bandeja-badge" style="margin-left:auto;background:#C0392B;color:#fff;font-size:9px;font-weight:700;min-width:18px;height:18px;border-radius:9px;display:none;align-items:center;justify-content:center;padding:0 4px;"></span></div>
     <div class="dp-nav" id="nav-miembros" data-sec="miembros" onclick="dpShow('miembros')">👥 &nbsp;Directorio de Socios</div>
     <div class="dp-nav" id="nav-solicitudes" data-sec="solicitudes" onclick="dpShow('solicitudes')">📥 &nbsp;Solicitudes <span id="dp-badge" style="margin-left:auto;background:#C0392B;color:#fff;font-size:9px;font-weight:700;min-width:18px;height:18px;border-radius:9px;display:none;align-items:center;justify-content:center;padding:0 4px;"></span></div>
     <div class="dp-nav" id="nav-comunicados" data-sec="comunicados" onclick="dpShow('comunicados')">📢 &nbsp;Comunicados</div>
     <div id="nav-offline" class="dp-nav" data-sec="offline" onclick="dpShow('offline')" style="display:none;">👤 &nbsp;Socios Offline</div>
     <div class="dp-nav" data-sec="cargos-hist" onclick="dpShow('cargos-hist')">🏅 &nbsp;Historial de Cargos</div>
+    <div class="dp-nav" id="nav-galeria" data-sec="galeria" onclick="dpShow('galeria')">🏛️ &nbsp;Galería Histórica</div>
     <div style="padding:20px 20px 8px;margin-top:8px;font-size:9px;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:rgba(255,255,255,0.25);">Finanzas</div>
     <div class="dp-nav" data-sec="recibos" onclick="dpShow('recibos')">🧾 &nbsp;Recibos</div>
     <div class="dp-nav" data-sec="cuotas" onclick="dpShow('cuotas')">💰 &nbsp;Tarifas Base</div>
@@ -18479,9 +19935,6 @@ body.damas-theme .filter-tab-active { background:rgba(139,74,107,0.15); color:#5
     <div class="dp-nav" id="nav-pagos" data-sec="pagos" onclick="dpShow('pagos')">💰 &nbsp;Pagos / Adeudos</div>
     <div class="dp-nav" data-sec="aging" onclick="dpShow('aging')">🕰 &nbsp;Antigüedad de Adeudos</div>
     <div class="dp-nav" data-sec="reportes-fin" onclick="dpShow('reportes-fin')">📊 &nbsp;Reportes Financieros</div>
-    <div class="dp-nav" data-sec="sec-informe" onclick="dpShow('sec-informe')">📜 &nbsp;Informe Secretario</div>
-    <div class="dp-nav" data-sec="estadisticas" onclick="dpShow('estadisticas')">📋 &nbsp;Informe del Tesorero</div>
-    <div class="dp-nav" data-sec="cambio-directiva" onclick="dpShow('cambio-directiva')">🔄 &nbsp;Cambio de Directiva</div>
     <div style="padding:20px 20px 8px;margin-top:8px;font-size:9px;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:rgba(255,255,255,0.25);">Auditoría</div>
     <div class="dp-nav" data-sec="integridad" onclick="dpShow('integridad')" id="nav-integridad" style="display:none;">🛡️ &nbsp;Control de Integridad</div>
     <div class="dp-nav" data-sec="eventos-sensibles" onclick="dpShow('eventos-sensibles')" id="nav-eventos-sensibles" style="display:none;">⚠️ &nbsp;Eventos Sensibles</div>
@@ -18572,6 +20025,29 @@ body.damas-theme .filter-tab-active { background:rgba(139,74,107,0.15); color:#5
         <div id="dash-rh-bloque" style="display:none;grid-template-columns:1fr 340px;gap:20px;">
           <div class="dp-card"><div class="dp-card-hdr"><span class="dp-card-ttl">Distribución por Tipo</span></div><div id="dp-type-bars" style="display:flex;flex-direction:column;gap:14px;padding:20px;"></div></div>
           <div class="dp-card"><div class="dp-card-hdr"><span class="dp-card-ttl">Miembros Recientes</span><span style="font-size:11px;color:#8A9BB0;">Últimos 5</span></div><div id="dp-recent" style="padding:0 20px 16px;"></div></div>
+        </div>
+      </div>
+
+      <!-- 🦁 DIRECTIVA (hub) -->
+      <div id="dp-sec-directiva" class="dp-section" style="display:none;">
+        <div id="dp-directiva-hero" style="position:relative;overflow:hidden;border-radius:16px;padding:26px 28px;margin-bottom:22px;background:linear-gradient(135deg,#0D1B2A 0%,#132840 55%,#1B3A5C 100%);color:#fff;">
+          <div style="position:absolute;right:-10px;top:-20px;font-size:130px;opacity:.08;line-height:1;">🦁</div>
+          <div style="font-family:'Playfair Display',serif;font-size:12px;letter-spacing:3px;text-transform:uppercase;color:#E8B84B;font-weight:700;">Club de Leones de Veracruz, A.C.</div>
+          <div style="font-family:'Playfair Display',serif;font-size:28px;font-weight:800;margin-top:4px;">Mesa Directiva</div>
+          <div id="dp-directiva-sub" style="font-size:13px;color:#C7D3E0;margin-top:6px;">Ejercicio en curso · cargos y documentos oficiales</div>
+        </div>
+
+        <div style="font-size:11px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;color:#8A9BB0;margin:0 4px 12px;">Documentos y herramientas</div>
+        <div id="dp-directiva-cards" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:14px;margin-bottom:26px;"></div>
+
+        <div class="dp-card">
+          <div class="dp-card-hdr">
+            <span class="dp-card-ttl">Integrantes de la Mesa Directiva</span>
+            <span id="dp-directiva-count" style="font-size:11px;color:#8A9BB0;"></span>
+          </div>
+          <div id="dp-directiva-lista" style="padding:8px 10px 16px;">
+            <div style="text-align:center;padding:40px;color:#8A9BB0;">Cargando directiva...</div>
+          </div>
         </div>
       </div>
 
@@ -19340,6 +20816,20 @@ body.damas-theme .filter-tab-active { background:rgba(139,74,107,0.15); color:#5
       </div>
 
       <!-- AUDITORIA — CAMBIO 3 -->
+      <div id="dp-sec-galeria" class="dp-section" style="display:none;">
+        <div style="background:#fff;border-radius:14px;padding:22px;max-width:780px;box-shadow:0 2px 12px rgba(13,27,42,0.06);">
+          <p style="font-size:13px;color:#5A6A7A;margin:0 0 16px;">Presidentes y reinas del club. Estos listados son los que ven los socios en <b>Recursos → Galería Histórica</b>.</p>
+          <div style="display:flex;gap:8px;margin-bottom:16px;max-width:440px;">
+            <button class="gal-tab active" data-tab="presidentes" onclick="galeriaSetTab('presidentes')">🦁 Presidentes</button>
+            <button class="gal-tab" data-tab="reinas" onclick="galeriaSetTab('reinas')">👑 Reinas</button>
+          </div>
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+            <span id="galeria-admin-count" style="font-size:12px;color:#8A9BB0;font-weight:600;"></span>
+            <button class="gal-add-btn" onclick="galeriaAddCurrent()">＋ Agregar</button>
+          </div>
+          <div id="galeria-admin-list"></div>
+        </div>
+      </div>
       <div id="dp-sec-auditoria" class="dp-section" style="display:none;">
         <div style="display:flex;align-items:flex-end;justify-content:space-between;margin-bottom:20px;flex-wrap:wrap;gap:12px;">
           <div>
@@ -19563,6 +21053,13 @@ body.damas-theme .filter-tab-active { background:rgba(139,74,107,0.15); color:#5
               <option value="vencidos">Vencidos</option>
               <option value="al-corriente">Al corriente</option>
             </select>
+            <select id="dp-pagos-morosos-meses" style="padding:8px 12px;border:1.5px solid #E8E0D4;border-radius:9px;font-family:'DM Sans',sans-serif;font-size:13px;background:#fff;" title="Meses de adeudo mínimos a incluir en el reporte">
+              <option value="1">Adeudo: 1 mes o más</option>
+              <option value="2">Adeudo: 2 meses o más</option>
+              <option value="3">Adeudo: 3 meses o más</option>
+              <option value="4">Adeudo: 4 meses o más</option>
+            </select>
+            <button onclick="dpPagosReporteMorosos()" style="padding:8px 16px;background:#0D1B2A;color:#E8B84B;border:none;border-radius:9px;font-family:'DM Sans',sans-serif;font-size:12px;font-weight:700;cursor:pointer;">🖨 Imprimir morosos</button>
             <button onclick="dpPagosLoad(true)" style="padding:8px 16px;background:linear-gradient(135deg,#E8B84B,#C9973A);color:#0D1B2A;border:none;border-radius:9px;font-family:'DM Sans',sans-serif;font-size:12px;font-weight:700;cursor:pointer;">🔄 Actualizar</button>
           </div>
         </div>
@@ -19583,7 +21080,7 @@ body.damas-theme .filter-tab-active { background:rgba(139,74,107,0.15); color:#5
           <div style="display:flex;gap:10px;">
             <button onclick="rbImprimirLote()" style="padding:9px 18px;background:#fff;color:#0D1B2A;border:2px solid #E8E0D4;border-radius:10px;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;cursor:pointer;">🖨 Imprimir Lista</button>
             <button onclick="rbOpenLote()" style="padding:9px 18px;background:#fff;color:#0D1B2A;border:2px solid #E8E0D4;border-radius:10px;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;cursor:pointer;">📋 Recibos en Lote</button>
-            <button onclick="rbAdelantadoAbrir()" style="padding:9px 18px;background:#0D1B2A;color:#E8B84B;border:none;border-radius:10px;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;cursor:pointer;">💳 Pago adelantado</button>
+            <button onclick="rbAdelantadoAbrir()" style="padding:9px 18px;background:#0D1B2A;color:#E8B84B;border:none;border-radius:10px;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;cursor:pointer;">🧾 Cuotas del semestre / año</button>
             <button onclick="rbOpenNuevo()" style="padding:9px 18px;background:linear-gradient(135deg,#E8B84B,#C9973A);color:#0D1B2A;border:none;border-radius:10px;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;cursor:pointer;">➕ Nuevo Recibo</button>
           </div>
         </div>
@@ -20188,8 +21685,8 @@ body.damas-theme .filter-tab-active { background:rgba(139,74,107,0.15); color:#5
 <!-- ════ MODAL: PAGO ADELANTADO (semestre/anual) ════ -->
 <div id="rb-modal-adelantado" style="display:none;position:fixed;inset:0;background:rgba(13,27,42,0.7);backdrop-filter:blur(4px);z-index:9300;align-items:center;justify-content:center;padding:24px;overflow-y:auto;" onclick="if(event.target===this)rbAdelantadoCerrar()">
   <div style="background:#fff;border-radius:18px;width:100%;max-width:840px;box-shadow:0 24px 80px rgba(13,27,42,0.35);padding:24px 28px;max-height:90vh;overflow-y:auto;">
-    <div style="font-family:'Playfair Display',serif;font-size:20px;font-weight:700;color:#0D1B2A;margin-bottom:4px;">💳 Pago adelantado</div>
-    <div style="font-size:12px;color:#8A9BB0;margin-bottom:16px;">Cobra por adelantado un semestre o año. Los recibos quedan pagados mes a mes; el lote mensual los saltará automáticamente.</div>
+    <div style="font-family:'Playfair Display',serif;font-size:20px;font-weight:700;color:#0D1B2A;margin-bottom:4px;">🧾 Cuotas del semestre / año</div>
+    <div style="font-size:12px;color:#8A9BB0;margin-bottom:16px;">Genera de una vez las cuotas de un semestre o año como recibos <b>pendientes de pago</b>. El lote mensual no las duplicará. El socio las paga después y el ingreso se registra en ese momento.</div>
     <div id="rb-adel-existente" style="display:none;font-size:12px;color:#C0392B;background:rgba(192,57,43,0.06);border-radius:9px;padding:10px 12px;margin-bottom:12px;"></div>
     <div style="margin-bottom:12px;"><div class="cd-lbl">Socio</div><select id="rb-adel-socio" onchange="rbAdelantadoPreview()" class="cd-inp"></select></div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px;">
@@ -20203,13 +21700,13 @@ body.damas-theme .filter-tab-active { background:rgba(139,74,107,0.15); color:#5
       </select></div>
     </div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px;">
-      <div><div class="cd-lbl">Destino del pago</div><select id="rb-adel-destino" class="cd-inp"><option value="banco">🏛️ Banco</option><option value="caja">💵 Caja</option></select></div>
-      <div><div class="cd-lbl">Fecha de pago</div><input type="date" id="rb-adel-fecha" class="cd-inp"></div>
+      <div><div class="cd-lbl">Descuento por pago semestral / anual (%)</div><input type="number" id="rb-adel-descpct" min="0" max="100" step="any" value="0" placeholder="0" oninput="rbAdelantadoRecalc()" class="cd-inp"></div>
+      <div><div class="cd-lbl">Fecha de emisión</div><input type="date" id="rb-adel-fecha" class="cd-inp"></div>
     </div>
     <div style="background:#F8F6F1;border-radius:10px;padding:12px 14px;margin-bottom:18px;"><div style="font-size:11px;font-weight:700;color:#8A9BB0;text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px;">Vista previa</div><div id="rb-adel-preview"></div></div>
     <div style="display:flex;justify-content:flex-end;gap:10px;">
       <button onclick="rbAdelantadoCerrar()" style="padding:10px 20px;background:#F5F0E8;color:#0D1B2A;border:none;border-radius:10px;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;cursor:pointer;">Cancelar</button>
-      <button id="rb-adel-btn" onclick="rbAdelantadoGuardar()" style="padding:10px 22px;background:linear-gradient(135deg,#E8B84B,#C9973A);color:#0D1B2A;border:none;border-radius:10px;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;cursor:pointer;">💳 Cobrar adelantado</button>
+      <button id="rb-adel-btn" onclick="rbAdelantadoGuardar()" style="padding:10px 22px;background:linear-gradient(135deg,#E8B84B,#C9973A);color:#0D1B2A;border:none;border-radius:10px;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;cursor:pointer;">🧾 Generar cuotas</button>
     </div>
   </div>
 </div>
@@ -20564,6 +22061,19 @@ body.damas-theme .filter-tab-active { background:rgba(139,74,107,0.15); color:#5
     <button onclick="miReciboImprimir()" style="padding:7px 13px;background:rgba(201,151,58,0.2);color:#E8B84B;border:1px solid rgba(201,151,58,0.4);border-radius:8px;font-family:'DM Sans',sans-serif;font-size:12px;font-weight:600;cursor:pointer;">📥 Imprimir</button>
   </div>
   <div id="mi-recibo-body" style="padding:20px 16px;max-width:520px;margin:0 auto;width:100%;"></div>
+  <div id="mi-recibo-pago" style="display:none;"></div>
+</div>
+
+<!-- ══ CAJA FLOTANTE: CUENTA DEL CLUB (copiar cuenta/CLABE) ══ -->
+<div id="datos-banco-modal" style="display:none;position:fixed;inset:0;background:rgba(13,27,42,0.6);backdrop-filter:blur(4px);z-index:9700;align-items:center;justify-content:center;padding:20px;" onclick="if(event.target===this)cerrarDatosBanco()">
+  <div style="background:#F9F5EF;border-radius:20px;width:100%;max-width:420px;padding:22px 20px 20px;box-shadow:0 24px 80px rgba(13,27,42,0.4);">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
+      <div style="font-family:'Playfair Display',serif;font-size:18px;font-weight:700;color:#0D1B2A;">💳 Cuenta del Club</div>
+      <button onclick="cerrarDatosBanco()" style="background:none;border:none;font-size:24px;color:#8A9BB0;cursor:pointer;line-height:1;padding:0 4px;">×</button>
+    </div>
+    <div style="font-size:12.5px;color:#8A9BB0;margin-bottom:16px;">Para tus pagos por transferencia — a la mano cuando la necesites.</div>
+    <div id="datos-banco-body"></div>
+  </div>
 </div>
 
 <!-- ════ MI RECIBO DESCARGA MODAL ════ -->
@@ -20976,6 +22486,12 @@ body.damas-theme .filter-tab-active { background:rgba(139,74,107,0.15); color:#5
         <label class="dp-lbl">Observaciones / solicitudes especiales</label>
         <input id="rsv-reserva-observaciones" class="dp-inp" placeholder="Ej: requiere proyector, decoración rosa..." style="margin:0;">
       </div>
+    </div>
+
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;padding:10px 14px;background:#fff;border:1.5px solid #EFE6D7;border-radius:10px;">
+      <input type="checkbox" id="rsv-reserva-afecta-est" style="width:18px;height:18px;cursor:pointer;accent-color:#C0392B;">
+      <label for="rsv-reserva-afecta-est" style="flex:1;font-size:13px;color:#0D1B2A;cursor:pointer;font-weight:600;">🅿️ Afecta el estacionamiento</label>
+      <span style="font-size:10.5px;color:#8A9BB0;">Envía avisos push 7 días, 1 día y el día del evento</span>
     </div>
 
     <div style="background:#F9F5EF;border-radius:12px;padding:14px 16px;margin-bottom:14px;">

@@ -406,7 +406,20 @@ service cloud.firestore {
       allow read: if isAdminOrSub() || isTesorero() || isMutualista() ||
         (isAuthenticated() && resource.data.socioUID == request.auth.uid);
       allow create: if (isAdminOrSub() || isTesorero()) && validRecibo();
-      allow update: if (isAdminOrSub() || isTesorero()) && validRecibo() && reciboInmutables();
+      // Admin/tesorero: edición completa del recibo.
+      // Socio dueño: SOLO puede enviar/reemplazar su comprobante de pago
+      // (campo revisionPago con estado 'pendiente_revision'), sin tocar montos,
+      // estado de pago ni ningún otro campo. La confirmación la hace el admin.
+      allow update: if
+        ((isAdminOrSub() || isTesorero()) && validRecibo() && reciboInmutables())
+        || (
+          isAuthenticated()
+          && resource.data.socioUID == request.auth.uid
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['revisionPago','modificado'])
+          && request.resource.data.revisionPago.estado == 'pendiente_revision'
+          && request.resource.data.revisionPago.comprobanteUrl is string
+          && request.resource.data.revisionPago.comprobanteUrl.size() < 500
+        );
       allow delete: if isAdminOrSub() || isTesorero();
     }
 
@@ -513,14 +526,14 @@ service cloud.firestore {
 
     // botanas: rol de botana del viernes
     // - Lectura: socios activos (tipo='socio') + admin/subadmin
-    // - Crear/borrar: cantinero + admin/subadmin
-    // - Update general: cantinero + admin/subadmin
+    // - Crear/borrar: cantinero + tesorero + admin/subadmin
+    // - Update general: cantinero + tesorero + admin/subadmin
     // - Update parcial: cualquier socio aprobado puede modificar SOLO el campo `asistentes`
     //   (para confirmar/cancelar su asistencia a la botana)
     match /botanas/{docId} {
       allow read: if isAdminOrSub() || isSocio();
-      allow create, delete: if isAdminOrSub() || isCantinero();
-      allow update: if isAdminOrSub() || isCantinero()
+      allow create, delete: if isAdminOrSub() || isCantinero() || isTesorero();
+      allow update: if isAdminOrSub() || isCantinero() || isTesorero()
                     || (isApprovedMember() && isSocio()
                         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['asistentes']));
     }
@@ -636,6 +649,24 @@ service cloud.firestore {
       allow read: if isAdminOrSub();
       allow create, update: if isAdminOrSub() && validSecInforme();
       allow delete: if isAdmin();
+    }
+
+    // ── Galería histórica: presidentes y reinas del club ─────────────────────
+    function validGaleria() {
+      let d = request.resource.data;
+      return fieldStrOk(d, 'nombre', 200)
+          && fieldStrOk(d, 'periodo', 20)
+          && fieldStrOk(d, 'alias', 120);
+    }
+    match /presidentes/{docId} {
+      allow read: if isApprovedMember();
+      allow create, update: if isAdminOrSub() && validGaleria();
+      allow delete: if isAdminOrSub();
+    }
+    match /reinas/{docId} {
+      allow read: if isApprovedMember();
+      allow create, update: if isAdminOrSub() && validGaleria();
+      allow delete: if isAdminOrSub();
     }
 
     // Catch-all: bloquea cualquier colección no declarada explícitamente
