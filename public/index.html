@@ -319,12 +319,14 @@ function goTo(screenId) {
     window._offlineSociosList = [];
     window._offlineSelectedId = null;
     window._offlineFullData   = null;
+    window._offlineManualMode = false;
     // Asegurar estado inicial: tipo Socio con picker visible
     document.querySelectorAll('.type-btn').forEach(b => b.classList.toggle('active', b.dataset.tipo === 'socio'));
     document.getElementById('row-reg-nombre').style.display = 'none';
     document.getElementById('reg-offline-section').style.display = 'block';
     document.getElementById('reg-offline-picker').style.display = 'block';
     document.getElementById('reg-offline-selected').style.display = 'none';
+    document.getElementById('reg-offline-manual').style.display   = 'none';
     document.getElementById('row-reg-ingreso').style.display = 'block';
     document.getElementById('row-reg-conyuge').style.display = 'block';
     document.getElementById('row-reg-padrino').style.display = 'block';
@@ -1020,11 +1022,16 @@ window.doRegister = async function() {
   if (_registerInProgress) return;
   const tipo = document.querySelector('.type-btn.active')?.dataset.tipo || 'socio';
 
-  // Para Socio: nombre/apellido vienen del offline seleccionado (obligatorio)
+  // Para Socio: nombre/apellido vienen del offline seleccionado, o se capturan a
+  // mano si es un socio nuevo que no aparece en la base offline (modo manual).
   let nombre, apellido;
-  if (tipo === 'socio') {
+  if (tipo === 'socio' && window._offlineManualMode) {
+    nombre   = document.getElementById('reg-nombre').value.trim();
+    apellido = document.getElementById('reg-apellido').value.trim();
+    if (!nombre || !apellido) { showToast('Completa nombre y apellido', 'error'); return; }
+  } else if (tipo === 'socio') {
     if (!window._offlineSelectedId || !window._offlineFullData) {
-      showToast('Selecciona tu nombre de la lista para activar tu cuenta', 'error');
+      showToast('Selecciona tu nombre de la lista, o indica que eres socio nuevo', 'error');
       document.getElementById('reg-offline-picker')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
       return;
     }
@@ -5227,8 +5234,8 @@ window.setTipo = function(tipo) {
 
   const esSocio = tipo === 'socio';
 
-  // Nombre/apellido: visible solo para no-socios
-  document.getElementById('row-reg-nombre').style.display = esSocio ? 'none' : 'grid';
+  // Nombre/apellido: visible para no-socios, y para socios en modo "socio nuevo"
+  document.getElementById('row-reg-nombre').style.display = (esSocio && !window._offlineManualMode) ? 'none' : 'grid';
 
   // Sección offline obligatoria solo para socios
   document.getElementById('reg-offline-section').style.display = esSocio ? 'block' : 'none';
@@ -5239,10 +5246,12 @@ window.setTipo = function(tipo) {
   document.getElementById('row-reg-padrino').style.display = esSocio ? 'block' : 'none';
 
   if (!esSocio) {
-    // Limpiar selección offline al cambiar de tipo
+    // Limpiar selección/modo offline al cambiar de tipo
     window._offlineSelectedId = null;
     window._offlineFullData   = null;
+    window._offlineManualMode = false;
     document.getElementById('reg-offline-selected').style.display = 'none';
+    document.getElementById('reg-offline-manual').style.display   = 'none';
     document.getElementById('reg-offline-picker').style.display = 'block';
     const _srchEl = document.getElementById('reg-offline-search');
     if (_srchEl) _srchEl.value = '';
@@ -5375,6 +5384,29 @@ window.clearOfflineSelection = function() {
   window._renderOfflineList(window._offlineSociosList || []);
 };
 
+// ── Socio nuevo: no está en la base offline, captura su nombre a mano ────────
+// El admin lo aprobará manualmente desde el panel (igual que cualquier 'pendiente').
+window._offlineManualMode = false;
+window.showOfflineManual = function() {
+  window._offlineManualMode = true;
+  window._offlineSelectedId = null;
+  window._offlineFullData   = null;
+  document.getElementById('reg-offline-picker').style.display   = 'none';
+  document.getElementById('reg-offline-selected').style.display = 'none';
+  document.getElementById('reg-offline-manual').style.display   = 'block';
+  document.getElementById('row-reg-nombre').style.display = 'grid';
+  document.getElementById('reg-nombre').value = '';
+  document.getElementById('reg-apellido').value = '';
+  document.getElementById('reg-nombre')?.focus();
+};
+window.hideOfflineManual = function() {
+  window._offlineManualMode = false;
+  document.getElementById('reg-offline-manual').style.display = 'none';
+  document.getElementById('reg-offline-picker').style.display = 'block';
+  document.getElementById('row-reg-nombre').style.display = 'none';
+  document.getElementById('reg-nombre').value = '';
+  document.getElementById('reg-apellido').value = '';
+};
 
 window.toggleDoc = function(id) {
   const body = document.getElementById(id);
@@ -18863,7 +18895,7 @@ window.finCategoriaPDF = function() {
 
 // IMPORTANTE: APP_VERSION debe coincidir con "version" en version.json y con
 // VERSION en sw.js. Bumpear las 3 juntas o el banner de update queda pegado.
-const APP_VERSION = '20260715-001';
+const APP_VERSION = '20260715-002';
 
 // Referencia al SW en espera (si existe), compartida entre ambas rutas de actualización
 window._pendingSW = null;
@@ -20114,6 +20146,10 @@ body.damas-theme .filter-tab-active { background:rgba(139,74,107,0.15); color:#5
       </div>
       <div id="reg-offline-list" style="max-height:220px;overflow-y:auto;border-top:1px solid #F5EFE6;"></div>
       <div id="reg-offline-empty" style="display:none;padding:16px;font-size:13px;color:#5C6B80;text-align:center;">Cargando socios…</div>
+      <div style="padding:10px 14px 14px;text-align:center;border-top:1px solid #F5EFE6;">
+        <button onclick="window.showOfflineManual()" type="button"
+          style="background:none;border:none;color:#2980B9;cursor:pointer;font-size:12.5px;font-weight:700;padding:6px;">¿No apareces en la lista? Soy socio nuevo →</button>
+      </div>
     </div>
     <!-- Estado B: socio seleccionado (nombre bloqueado) -->
     <div id="reg-offline-selected" style="display:none;padding:14px 16px;background:#E8F5EE;border:1.5px solid #A8D5B8;border-radius:14px;">
@@ -20127,6 +20163,15 @@ body.damas-theme .filter-tab-active { background:rgba(139,74,107,0.15); color:#5
       <div style="margin-top:8px;font-size:11px;color:#5A6A7A;display:flex;align-items:center;gap:5px;">
         <span>🔒</span> Nombre vinculado — no editable
       </div>
+    </div>
+    <!-- Estado C: socio nuevo, no encontrado en la base offline -->
+    <div id="reg-offline-manual" style="display:none;padding:14px 16px;background:#FFF8EE;border:1.5px solid #E8D9C4;border-radius:14px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
+        <div style="font-size:12px;font-weight:700;color:#C9973A;letter-spacing:0.5px;text-transform:uppercase;">🆕 Socio nuevo</div>
+        <button onclick="window.hideOfflineManual()" type="button"
+          style="background:none;border:none;color:#2980B9;cursor:pointer;font-size:12px;font-weight:700;padding:0;">← Volver a buscar</button>
+      </div>
+      <div style="font-size:12.5px;color:#5A6A7A;line-height:1.5;">Escribe tu nombre completo abajo. Tu solicitud quedará <b>pendiente de aprobación</b> por el administrador antes de activarse.</div>
     </div>
   </div>
 
