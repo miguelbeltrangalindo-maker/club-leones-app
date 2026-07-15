@@ -1,0 +1,15 @@
+# Archivos que NO se suben al desplegar las Cloud Functions.
+# Se conserva node_modules fuera del paquete (Firebase lo reinstala en el servidor).
+node_modules/
+.git/
+.gitignore
+
+# Scripts de un solo uso / mantenimiento: se ejecutan localmente con `node functions/<archivo>.js`
+# usando Admin SDK. No son Cloud Functions y no deben empaquetarse en el deploy.
+auditDuplicados.js
+auditEmails.js
+backfillPagoCarlosJulio.js
+backfillRoles.js
+backfillTesoreroHist.js
+consolidarJuanMartinez.js
+seedGaleria.js

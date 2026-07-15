@@ -128,6 +128,7 @@ service cloud.firestore {
       let changed = request.resource.data.diff(resource.data).changedKeys();
       let d = request.resource.data;
       return changed.hasOnly(['nombre','apellido','whatsapp','photoURL','conyuge','fechaNacimiento','fcmToken'])
+        && noHtml(d, 'nombre') && noHtml(d, 'apellido') && noHtml(d, 'whatsapp') && noHtml(d, 'conyuge')
         && (!changed.hasAny(['nombre'])          || d.get('nombre',         null) == null || (d.nombre          is string && d.nombre.size()          <= 80))
         && (!changed.hasAny(['apellido'])        || d.get('apellido',       null) == null || (d.apellido        is string && d.apellido.size()        <= 80))
         && (!changed.hasAny(['whatsapp'])        || d.get('whatsapp',       null) == null || (d.whatsapp        is string && d.whatsapp.size()        <= 20))
@@ -142,6 +143,8 @@ service cloud.firestore {
     function validSelfRegisterUsuario() {
       let d = request.resource.data;
       return (!d.keys().hasAny(['rol']) || d.rol == 'pendiente')
+          && noHtml(d, 'nombre') && noHtml(d, 'apellido') && noHtml(d, 'correo')
+          && noHtml(d, 'whatsapp') && noHtml(d, 'conyuge')
           && (!d.keys().hasAny(['nombre']) || (d.nombre is string && d.nombre.size() <= 80))
           && (!d.keys().hasAny(['apellido']) || (d.apellido is string && d.apellido.size() <= 80))
           && (!d.keys().hasAny(['correo']) || (d.correo is string && d.correo.size() <= 100))
@@ -184,6 +187,15 @@ service cloud.firestore {
     function fieldStrInOk(d, k, list) { return !(k in d) || d[k] == null || (d[k] is string && d[k] in list); }
     function fieldYearOk(d, k)        { return !(k in d) || d[k] == null || (d[k] is number && d[k] >= 2000 && d[k] <= 2100); }
     function fieldBoolOk(d, k)        { return !(k in d) || d[k] == null || d[k] is bool; }
+
+    // Anti-XSS en la fuente: rechaza < > " en campos de texto libre que escribe el
+    // propio usuario (no privilegiado). Impide almacenar payloads tipo
+    // `<img onerror=...>` que luego se rendericen en la sesión de un admin. Los
+    // nombres/correos legítimos nunca contienen estos caracteres. Es defensa en
+    // profundidad junto con esc() en el cliente al renderizar.
+    function noHtml(d, k) {
+      return !(k in d) || d[k] == null || (d[k] is string && !d[k].matches('.*[<>"].*'));
+    }
 
     function validRecibo() {
       let d = request.resource.data;
@@ -355,11 +367,12 @@ service cloud.firestore {
       // de cuenta donde el nuevo socio aún no tiene auth y necesita encontrar su perfil).
       // Nota: los docs offline contienen solo datos ingresados por el admin (sin contraseña).
       allow get:  if isApprovedMember();
-      // El branch de offline:true permite que un usuario nuevo (pendiente,
-      // aún sin aprobación) encuentre su perfil offline durante la activación.
-      // Requiere auth para evitar enumeración pública del directorio.
-      allow list: if isApprovedMember()
-                    || (isAuthenticated() && resource.data.offline == true);
+      // Lista/query SOLO para miembros aprobados. El picker de registro (socio
+      // offline reclamando su perfil) ya NO lee esta colección directamente —para
+      // no exponer PII (correo, whatsapp, cónyuge, fecha de nacimiento) a cualquier
+      // autenticado— sino que usa el callable buscarSociosOffline, que devuelve
+      // únicamente nombre, apellido y número de socio.
+      allow list: if isApprovedMember();
       // Self-register: el usuario sólo puede crear su propio doc con rol='pendiente'.
       // Admin/subadmin puede crear cualquier perfil (alta de socios offline, etc.)
       allow create: if (isSelf(userId) && validSelfRegisterUsuario()) || isAdminOrSub();
@@ -582,6 +595,16 @@ service cloud.firestore {
           && fieldBoolOk(d, 'afectaEstacionamiento')
           && fieldBoolOk(d, 'activo');
     }
+    // Libro Digital de Actas: título, fecha y el PDF ya subido a Cloudinary.
+    function validActa() {
+      let d = request.resource.data;
+      return fieldStrInOk(d, 'tipo', ['directiva','asamblea'])
+          && fieldStrOk(d, 'titulo', 300)
+          && fieldStrOk(d, 'fecha', 30)
+          && fieldStrOk(d, 'pdfUrl', 800)
+          && fieldStrOk(d, 'storagePath', 300)
+          && fieldStrOk(d, 'subidoPorNombre', 200);
+    }
     function validReservacion() {
       let d = request.resource.data;
       return fieldStrOk(d, 'salonId', 100)
@@ -596,6 +619,9 @@ service cloud.firestore {
           && fieldStrOk(d, 'observaciones', 1500)
           && fieldNumOk(d, 'costo', 50000000)
           && fieldNumOk(d, 'descuentoAplicado', 50000000)
+          && fieldNumOk(d, 'horasExtraPrecio', 50000000)
+          && fieldNumOk(d, 'horasExtraCantidad', 100000)
+          && fieldNumOk(d, 'horasExtraCosto', 50000000)
           && fieldNumOk(d, 'iva', 50000000)
           && fieldBoolOk(d, 'aplicaIva')
           && fieldNumOk(d, 'anticipo', 50000000)
@@ -626,6 +652,14 @@ service cloud.firestore {
       allow read: if isAdminOrSub();
       allow create, update: if isAdminOrSub() && validReservacion();
       allow delete: if isAdmin();
+    }
+
+    // actas: Libro Digital de Actas (Directiva y Asamblea) — cualquier cargo de
+    // directiva puede leer, subir y borrar; también los líderes/admin.
+    match /actas/{docId} {
+      allow read: if isApprovedMember() && (esDirectivaVotante() || esLiderVotacion());
+      allow create, update: if isApprovedMember() && (esDirectivaVotante() || esLiderVotacion()) && validActa();
+      allow delete: if isApprovedMember() && (esDirectivaVotante() || esLiderVotacion());
     }
 
     // ── Validación módulo Secretario ───────────────────────────────────────
@@ -706,11 +740,19 @@ service cloud.firestore {
       // Votos: un documento por socio (id = uid). Los líderes ven todos (nominal);
       // el socio solo su propio voto (el resultado agregado lo lee del doc padre).
       match /votos/{uid} {
-        allow read: if esLiderVotacion() || isSelf(uid);
+        // Voto secreto en elecciones: ni los líderes ven el voto individual (solo el dueño).
+        // En votaciones normales, los líderes ven el nominal.
+        allow read: if isSelf(uid) || (esLiderVotacion() && votacionData(vid).get('tipo', null) != 'eleccion');
         allow create, update: if isSelf(uid)
+          && isApprovedMember() && isSocio()
           && votacionData(vid).estado == 'abierta'
           && (votacionData(vid).audiencia == 'todos' || esDirectivaVotante() || esLiderVotacion())
-          && request.resource.data.voto in ['favor','contra','abstencion'];
+          && (
+               (votacionData(vid).get('tipo', null) == 'eleccion'
+                  && request.resource.data.candidato in votacionData(vid).candidatoUIDs
+                  && (!('votantesPermitidos' in votacionData(vid)) || request.auth.uid in votacionData(vid).votantesPermitidos))
+               || (votacionData(vid).get('tipo', null) != 'eleccion' && request.resource.data.voto in ['favor','contra','abstencion'])
+             );
         allow delete: if isSelf(uid) && votacionData(vid).estado == 'abierta';
       }
     }

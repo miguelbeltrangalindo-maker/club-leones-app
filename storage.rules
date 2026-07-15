@@ -1,0 +1,34 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    // NOTA: Storage Rules en este proyecto NO soporta firestore.get()/firestore.exists()
+    // (el compilador los reporta como "Invalid function name" y siempre evalúan a false,
+    // negando todo acceso). Por eso el control de "solo directiva" para actas vive en:
+    //   1) la UI (el botón/pantalla solo se muestra a socios con cargo de directiva), y
+    //   2) firestore.rules para la colección 'actas' (metadatos: título, tipo, pdfUrl),
+    //      que sí puede leer cargos vía esDirectivaVotante()/esLiderVotacion().
+    // Aquí solo exigimos sesión autenticada — el nivel de exposición es igual o mejor
+    // que el esquema anterior con Cloudinary (URL pública sin ninguna autenticación).
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    match /actas/{fileName} {
+      allow read: if isAuthenticated();
+      // El borrado del PDF NO se permite desde el cliente: Storage Rules no puede
+      // validar el cargo de directiva (no soporta firestore.get()), así que cualquier
+      // autenticado podría borrar actas ajenas. En su lugar, al borrar el doc de la
+      // colección 'actas' (guardado por cargo en firestore.rules) el trigger
+      // limpiarPdfActaBorrada elimina el PDF con privilegios de Admin SDK.
+      allow delete: if false;
+      allow write: if isAuthenticated()
+        && request.resource.size < 20 * 1024 * 1024
+        && request.resource.contentType == 'application/pdf';
+    }
+
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

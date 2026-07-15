@@ -2,7 +2,7 @@
 //  functions/index.js  —  Club de Leones Veracruz
 //  Despliega con: firebase deploy --only functions
 // ═══════════════════════════════════════════════════════════
-const { onDocumentCreated, onDocumentUpdated } = require('firebase-functions/v2/firestore');
+const { onDocumentCreated, onDocumentUpdated, onDocumentDeleted } = require('firebase-functions/v2/firestore');
 const { onSchedule } = require('firebase-functions/v2/scheduler');
 const { onCall, HttpsError } = require('firebase-functions/v2/https');
 const { setGlobalOptions } = require('firebase-functions/v2');
@@ -10,6 +10,7 @@ setGlobalOptions({ region: 'us-central1' });
 const { initializeApp }  = require('firebase-admin/app');
 const { getFirestore, FieldValue } = require('firebase-admin/firestore');
 const { getAuth }        = require('firebase-admin/auth');
+const { getStorage }     = require('firebase-admin/storage');
 const { getMessaging }   = require('firebase-admin/messaging');
 const nodemailer         = require('nodemailer');
 
@@ -45,6 +46,40 @@ async function getAllMemberTokens() {
   // 'usuario' incluido temporalmente para cubrir docs legacy hasta que
   // migrate-roles.js normalice todos a 'miembro'.
   return getTokensByRoles(['miembro','usuario','admin','subadmin','tesorero','cantinero','mutualista']);
+}
+
+// Tokens de miembros tipo 'socio' activos y aprobados (para votaciones/elecciones)
+async function getSocioTokens() {
+  const [usnap, rolesSnap] = await Promise.all([
+    db.collection('usuarios').get(),
+    db.collection('roles').get(),
+  ]);
+  const rolMap = {}; rolesSnap.forEach(d => { rolMap[d.id] = d.data(); });
+  const tokens = [];
+  usnap.forEach(d => {
+    const u = d.data();
+    if ((u.tipo || '') !== 'socio') return;
+    if (u.estado === 'baja') return;
+    const rd = rolMap[d.id];
+    const rolEf = (rd && rd.rol) || u.rol || 'miembro';
+    if (rolEf === 'pendiente') return;
+    if (rd && rd.activo === false) return;
+    if (u.fcmToken) tokens.push(u.fcmToken);
+  });
+  return [...new Set(tokens)];
+}
+
+// Tokens de los integrantes de la mesa directiva (por cargo)
+const VOT_DIRECTIVA_CARGOS = ['Presidente','Past Presidente','Vicepresidente','Segundo Vicepresidente','Secretario','Tesorero','Domador','Retorcedor','Vocal dos años','Vocal un año'];
+async function getDirectivaTokens() {
+  const snap = await db.collection('usuarios').get();
+  const tokens = [];
+  snap.forEach(d => {
+    const data = d.data();
+    const cargos = Array.isArray(data?.cargos) ? data.cargos : [];
+    if (cargos.some(c => VOT_DIRECTIVA_CARGOS.includes(c)) && data?.fcmToken) tokens.push(data.fcmToken);
+  });
+  return [...new Set(tokens)];
 }
 
 // Tokens de admin y subadmin (colección roles nueva + legacy en usuarios)
@@ -185,6 +220,35 @@ exports.notificarNuevoComunicado = onDocumentCreated(
   }
 );
 
+// ── TRIGGER: Nueva votación (al crearse) ──────────────────────────────────────
+// Avisa por push al público objetivo (todos los socios o solo la directiva).
+exports.notificarNuevaVotacion = onDocumentCreated(
+  'votaciones/{vid}',
+  async (event) => {
+    const data = event.data?.data();
+    if (!data || data.estado !== 'abierta') return;
+    const esEleccion = data.tipo === 'eleccion';
+    const title = esEleccion ? '🗳️ Nueva elección' : '🗳️ Nueva votación';
+    const body  = esEleccion
+      ? `${data.cargo || 'Elección'} · Periodo ${data.periodo || ''} — toca para votar por tu candidato`
+      : `${data.titulo || 'Hay una votación abierta'} — toca para votar`;
+    let tokens;
+    if (Array.isArray(data.votantesPermitidos)) {
+      // Segunda vuelta: solo quienes votaron en la primera
+      tokens = [];
+      for (const u of data.votantesPermitidos) {
+        try { const ud = await db.collection('usuarios').doc(u).get(); const t = ud.data()?.fcmToken; if (t) tokens.push(t); } catch(e) {}
+      }
+    } else if (data.audiencia === 'directiva') {
+      tokens = await getDirectivaTokens();
+    } else {
+      tokens = await getSocioTokens();   // 'todos' = solo miembros tipo socio
+    }
+    console.log(`📤 notificarNuevaVotacion (${esEleccion?'eleccion':'votacion'}/${data.audiencia}${data.votantesPermitidos?'/2avuelta':''}) — tokens: ${tokens.length}`);
+    await sendMulticast(tokens, title, body);
+  }
+);
+
 // ── TRIGGER: Resultado de votación (al cerrarse) ──────────────────────────────
 // Cuando una votación pasa de 'abierta' a 'cerrada', se cuentan los votos, se guarda
 // el resultado agregado en el doc (para que los socios lo vean, secreto) y se envía
@@ -201,6 +265,36 @@ exports.notificarResultadoVotacion = onDocumentUpdated(
     const vid = event.params.vid;
     console.log('🗳️ notificarResultadoVotacion — cerrando:', vid);
     const votosSnap = await db.collection('votaciones').doc(vid).collection('votos').get();
+
+    // ── ELECCIÓN: conteo por candidato (voto secreto) ──
+    if (after.tipo === 'eleccion') {
+      const conteo = {};
+      (after.candidatos || []).forEach(c => { conteo[c.uid] = 0; });
+      votosSnap.forEach(v => {
+        const cu = v.data().candidato;
+        if (cu != null) conteo[cu] = (conteo[cu] || 0) + 1;
+      });
+      const total = Object.values(conteo).reduce((s, n) => s + n, 0);
+      let maxN = 0; Object.values(conteo).forEach(n => { if (n > maxN) maxN = n; });
+      const lideres = Object.keys(conteo).filter(u => conteo[u] === maxN && maxN > 0);
+      const empate = lideres.length !== 1;
+      const ganadorUID = empate ? null : lideres[0];
+      const ganadorNombre = (after.candidatos || []).find(c => c.uid === ganadorUID)?.nombre || '';
+      try {
+        await event.data.after.ref.set({ resultado: { conteo, total, ganadorUID, ganadorNombre, empate } }, { merge: true });
+      } catch (e) { console.error('No se pudo guardar resultado elección:', e.message); }
+      // El resultado de la elección se envía a los socios
+      const tokens = await getSocioTokens();
+      const title = `🗳️ Resultado — ${after.cargo || 'Elección'} ${after.periodo || ''}`;
+      const body = empate
+        ? `Empate con ${maxN} voto(s). La directiva definirá una segunda vuelta.`
+        : `Ganó ${ganadorNombre} con ${maxN} de ${total} votos.`;
+      console.log(`📤 notificarResultadoVotacion (elección) — total votos: ${total}, tokens: ${tokens.length}`);
+      await sendMulticast(tokens, title, body);
+      return;
+    }
+
+    // ── VOTACIÓN normal: favor / contra / abstención ──
     let favor = 0, contra = 0, abstencion = 0;
     const uids = [];
     votosSnap.forEach(v => {
@@ -833,6 +927,110 @@ async function isAdminUid(uid) {
   return userDoc.exists && userDoc.data().rol === 'admin';
 }
 
+// ── CALLABLE: socios elegibles como candidatos (no adeudan más de 1 mes) ──────
+// Se ejecuta con privilegios de servidor para leer recibos de todos sin exponerlos.
+exports.listarCandidatosElegibles = onCall(async (request) => {
+  const uid = request.auth?.uid;
+  if (!uid) throw new HttpsError('unauthenticated', 'Inicia sesión');
+
+  // Verificar que el solicitante sea líder (cargo Presidente/Secretario/Tesorero o rol)
+  const [udSnap, rdSnap] = await Promise.all([
+    db.collection('usuarios').doc(uid).get(),
+    db.collection('roles').doc(uid).get(),
+  ]);
+  const rol = (rdSnap.exists && rdSnap.data().rol) || (udSnap.exists && udSnap.data().rol) || '';
+  const cargos = (udSnap.exists && Array.isArray(udSnap.data().cargos)) ? udSnap.data().cargos : [];
+  const esLider = ['admin', 'subadmin', 'tesorero'].includes(rol) ||
+    cargos.some(c => ['Presidente', 'Secretario', 'Tesorero'].includes(c));
+  if (!esLider) throw new HttpsError('permission-denied', 'Solo la directiva puede crear elecciones');
+
+  const [usnap, rsnap, rolesSnap] = await Promise.all([
+    db.collection('usuarios').get(),
+    db.collection('recibos').get(),
+    db.collection('roles').get(),
+  ]);
+  const rolMap = {}; rolesSnap.forEach(d => { rolMap[d.id] = d.data(); });
+
+  // Meses de adeudo por socio = recibos con saldo pendiente (no pagado/condonado)
+  const deuda = {};
+  rsnap.forEach(d => {
+    const r = d.data();
+    const estado = (r.estado || '').toLowerCase();
+    if (estado === 'pagado' || estado === 'condonado') return;
+    if ((Number(r.total || 0) - Number(r.montoPagado || 0)) <= 0) return;
+    const su = r.socioUID; if (!su) return;
+    deuda[su] = (deuda[su] || 0) + 1;
+  });
+
+  const candidatos = [];
+  usnap.forEach(d => {
+    const u = d.data();
+    if (u.estado === 'baja') return;
+    if ((u.tipo || '') !== 'socio') return;                 // solo socios
+    const rd = rolMap[d.id];
+    const rolEf = (rd && rd.rol) || u.rol || 'miembro';
+    if (rolEf === 'pendiente') return;
+    if (rd && rd.activo === false) return;
+    const meses = deuda[d.id] || 0;
+    if (meses > 1) return;                                   // no debe adeudar más de 1 mes
+    candidatos.push({ uid: d.id, nombre: `${u.nombre || ''} ${u.apellido || ''}`.trim(), numeroSocio: u.numeroSocio || '', meses });
+  });
+  candidatos.sort((a, b) => a.nombre.localeCompare(b.nombre, 'es', { sensitivity: 'base' }));
+  return { candidatos };
+});
+
+// ── CALLABLE: crear segunda vuelta (solo votantes de la 1ª ronda) ─────────────
+// El voto es secreto, así que la lista de participantes se arma en el servidor.
+exports.crearSegundaVuelta = onCall(async (request) => {
+  const uid = request.auth?.uid;
+  if (!uid) throw new HttpsError('unauthenticated', 'Inicia sesión');
+  const [udSnap, rdSnap] = await Promise.all([
+    db.collection('usuarios').doc(uid).get(),
+    db.collection('roles').doc(uid).get(),
+  ]);
+  const rol = (rdSnap.exists && rdSnap.data().rol) || (udSnap.exists && udSnap.data().rol) || '';
+  const cargos = (udSnap.exists && Array.isArray(udSnap.data().cargos)) ? udSnap.data().cargos : [];
+  const esLider = ['admin', 'subadmin', 'tesorero'].includes(rol) ||
+    cargos.some(c => ['Presidente', 'Secretario', 'Tesorero'].includes(c));
+  if (!esLider) throw new HttpsError('permission-denied', 'Solo la directiva puede crear la segunda vuelta');
+
+  const origenId = String(request.data?.votacionId || '');
+  if (!origenId) throw new HttpsError('invalid-argument', 'Falta la elección de origen');
+  const ref = db.collection('votaciones').doc(origenId);
+  const snap = await ref.get();
+  if (!snap.exists) throw new HttpsError('not-found', 'Elección no encontrada');
+  const v = snap.data();
+  if (v.tipo !== 'eleccion') throw new HttpsError('failed-precondition', 'No es una elección');
+  if (v.estado !== 'cerrada') throw new HttpsError('failed-precondition', 'La elección debe estar cerrada');
+
+  const votosSnap = await ref.collection('votos').get();
+  const conteo = {}; (v.candidatos || []).forEach(c => { conteo[c.uid] = 0; });
+  const votantes = [];
+  votosSnap.forEach(d => {
+    const cu = d.data().candidato;
+    if (cu != null) conteo[cu] = (conteo[cu] || 0) + 1;
+    votantes.push(d.id);
+  });
+  let max = 0; Object.values(conteo).forEach(n => { if (n > max) max = n; });
+  const empatados = (v.candidatos || []).filter(c => (conteo[c.uid] || 0) === max && max > 0);
+  if (empatados.length < 2) throw new HttpsError('failed-precondition', 'No hay empate que resolver');
+  if (!votantes.length) throw new HttpsError('failed-precondition', 'La primera vuelta no tuvo votos');
+
+  const candidatos = empatados.map(c => ({ uid: c.uid, nombre: c.nombre, numeroSocio: c.numeroSocio || '' }));
+  const nombre = udSnap.exists ? `${udSnap.data().nombre || ''} ${udSnap.data().apellido || ''}`.trim() : '';
+  const nueva = await db.collection('votaciones').add({
+    tipo: 'eleccion', cargo: v.cargo || 'Primer Vicepresidente', periodo: v.periodo || '',
+    titulo: `${v.titulo || 'Elección'} (2ª vuelta)`,
+    audiencia: 'todos', estado: 'abierta',
+    candidatos, candidatoUIDs: candidatos.map(c => c.uid),
+    votantesPermitidos: votantes, segundaVueltaDe: origenId,
+    creadaPorUID: uid, creadaPorNombre: nombre, creadaPorRol: 'directiva',
+    createdAt: FieldValue.serverTimestamp(), closedAt: null,
+  });
+  console.log(`🔁 Segunda vuelta creada ${nueva.id} — ${votantes.length} votantes, ${empatados.length} candidatos`);
+  return { id: nueva.id };
+});
+
 exports.cambiarCorreoUsuario = onCall(async (request) => {
   const callerUid = request.auth?.uid;
   if (!callerUid) throw new HttpsError('unauthenticated', 'Debes iniciar sesión');
@@ -904,4 +1102,56 @@ exports.cambiarCorreoUsuario = onCall(async (request) => {
   }
   console.log(`✉️ cambiarCorreoUsuario: ${targetUid} → ${nuevoEmail} (por ${callerUid})`);
   return { ok: true, correo: nuevoEmail };
+});
+
+// ── TRIGGER 12: limpiar el PDF de un acta borrada ─────────────────────────────
+// El borrado del doc en la colección 'actas' está protegido por cargo de directiva
+// en firestore.rules. Storage Rules no puede validar ese cargo, así que el borrado
+// directo del PDF desde el cliente quedó bloqueado (allow delete: if false). Aquí,
+// con privilegios de Admin SDK, eliminamos el archivo asociado al acta.
+exports.limpiarPdfActaBorrada = onDocumentDeleted(
+  'actas/{docId}',
+  async (event) => {
+    const data = event.data?.data();
+    const storagePath = data?.storagePath;
+    if (!storagePath || typeof storagePath !== 'string' || !storagePath.startsWith('actas/')) {
+      console.log('⏭️ limpiarPdfActaBorrada: sin storagePath válido, nada que borrar');
+      return;
+    }
+    try {
+      await getStorage().bucket().file(storagePath).delete();
+      console.log(`🗑️ PDF de acta borrado: ${storagePath}`);
+    } catch (e) {
+      // 404 = el archivo ya no existía; cualquier otro error se registra sin fallar.
+      if (e.code === 404) console.log(`⏭️ limpiarPdfActaBorrada: ${storagePath} ya no existía`);
+      else console.error('limpiarPdfActaBorrada ERROR:', e.message);
+    }
+  }
+);
+
+// ── CALLABLE: buscar socios offline para el picker de registro ────────────────
+// Antes el cliente leía /usuarios where offline==true directamente, lo que exponía
+// PII (correo, whatsapp, cónyuge, fecha de nacimiento) a cualquier autenticado.
+// Ahora el listado se sirve aquí devolviendo SOLO lo mínimo para que el socio se
+// identifique (nombre, apellido, número de socio). No requiere sesión porque el
+// picker se usa durante el registro (antes de existir la cuenta). La verificación
+// real de identidad la hace activarSocioOffline comparando el correo de Auth con
+// el correo que el admin registró en el doc offline.
+exports.buscarSociosOffline = onCall(async () => {
+  const snap = await db.collection('usuarios').where('offline', '==', true).get();
+  const socios = [];
+  snap.forEach(d => {
+    const u = d.data();
+    if (u.migrado === true) return;
+    socios.push({
+      id: d.id,
+      nombre: u.nombre || '',
+      apellido: u.apellido || '',
+      numeroSocio: u.numeroSocio || '',
+    });
+  });
+  socios.sort((a, b) =>
+    (a.apellido + a.nombre).localeCompare(b.apellido + b.nombre, 'es', { sensitivity: 'base' })
+  );
+  return { socios };
 });
