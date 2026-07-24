@@ -9265,6 +9265,212 @@ window.dpPagosReporteMorosos = function() {
   win.document.close();
 };
 
+// ════════════════════════════════════════════════════════════════
+//  CUOTAS POR CONCEPTO — busca en TODOS los recibos (row.recibos de
+//  dp-pagos, ya cargados) qué socios tienen cargos de un concepto
+//  dado, por palabra clave. Cubre tanto los campos fijos (c1-c5:
+//  Cuota Socio/Dama/Percápita/Baile de Coronación/Navidad) como los
+//  conceptos libres c6/c7 (Mutualista o "concepto extra"), cuya
+//  etiqueta puede variar entre recibos (ej. "CORONACION" capturado
+//  como concepto extra en vez del campo dedicado c4). Sin esto, un
+//  concepto puede quedar repartido entre varios campos y pasar
+//  desapercibido en los reportes fijos.
+// ════════════════════════════════════════════════════════════════
+function dpQuitarAcentos(s) {
+  return String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+}
+
+const DP_CONCEPTO_FIJOS = [
+  { key: 'c1', label: 'Cuota Socio' },
+  { key: 'c2', label: 'Cuota Dama' },
+  { key: 'c3', label: 'Percápita' },
+  { key: 'c4', label: 'Baile de Coronación' },
+  { key: 'c5', label: 'Navidad Escuela Club' },
+];
+
+window.dpAbrirReporteConcepto = function() {
+  const modal = document.getElementById('dp-modal-concepto');
+  if (!modal) return;
+  document.getElementById('dp-concepto-kpis').innerHTML = '';
+  document.getElementById('dp-concepto-resultados').innerHTML = '';
+  window._dpConceptoAgrupado = null;
+  modal.style.display = 'flex';
+  setTimeout(() => document.getElementById('dp-concepto-kw')?.focus(), 50);
+};
+window.dpCerrarModalConcepto = function() {
+  const modal = document.getElementById('dp-modal-concepto');
+  if (modal) modal.style.display = 'none';
+};
+
+window.dpBuscarCuotasConcepto = function() {
+  const rows = window._dpPagosRows;
+  if (!rows || !rows.length) { dpShowToast('Carga primero el estado de cuenta', 'info'); return; }
+  const kwRaw = (document.getElementById('dp-concepto-kw').value || '').trim();
+  if (!kwRaw) { dpShowToast('Escribe una palabra clave del concepto (ej. "coronación", "navidad")', 'error'); return; }
+  const kw = dpQuitarAcentos(kwRaw);
+
+  const anioDesde = parseInt(document.getElementById('dp-concepto-anio-desde').value, 10) || 0;
+  const mesDesde = parseInt(document.getElementById('dp-concepto-mes-desde').value, 10) || 0;
+  const anioHasta = parseInt(document.getElementById('dp-concepto-anio-hasta').value, 10) || 0;
+  const mesHasta = parseInt(document.getElementById('dp-concepto-mes-hasta').value, 10) || 0;
+  const idxDesde = anioDesde ? (anioDesde * 12 + Math.max(0, mesDesde - 1)) : null;
+  const idxHasta = anioHasta ? (anioHasta * 12 + Math.max(0, mesHasta - 1)) : null;
+
+  const porSocio = {};
+  rows.forEach(row => {
+    (row.recibos || []).forEach(r => {
+      const periodIdx = getReciboPeriodIndex(r);
+      if (idxDesde != null && periodIdx < idxDesde) return;
+      if (idxHasta != null && periodIdx > idxHasta) return;
+
+      const candidatos = [
+        ...DP_CONCEPTO_FIJOS.map(c => ({ label: c.label, monto: Number(r[c.key] || 0) })),
+        { label: r.c6label || 'Mutualista', monto: Number(r.c6 || 0) },
+        { label: r.c7label || 'Concepto extra', monto: Number(r.c7 || 0) },
+      ];
+      candidatos.forEach(c => {
+        if (c.monto <= 0) return;
+        if (!dpQuitarAcentos(c.label).includes(kw)) return;
+        const uid = row.uid;
+        if (!porSocio[uid]) porSocio[uid] = { uid, nombre: row.nombre, numeroSocio: row.numeroSocio, pagado: 0, pendiente: 0, condonado: 0, periodosPagados: [], periodosPendientes: [] };
+        const g = porSocio[uid];
+        const st = r.__statusEx || getReciboStatusEx(r);
+        const etiquetaPeriodo = `${r.mes || ''} ${r.anio || ''}`.trim();
+        if (st === 'pagado') {
+          g.pagado += c.monto;
+          g.periodosPagados.push({ periodo: etiquetaPeriodo, monto: c.monto });
+        } else if (st === 'condonado') {
+          g.condonado += c.monto;
+        } else {
+          g.pendiente += c.monto;
+          g.periodosPendientes.push({ periodo: etiquetaPeriodo, monto: c.monto, estado: st });
+        }
+      });
+    });
+  });
+
+  const data = Object.values(porSocio).sort((a, b) => (b.pagado + b.pendiente) - (a.pagado + a.pendiente));
+  window._dpConceptoAgrupado = { keyword: kwRaw, desde: { anio: anioDesde, mes: mesDesde }, hasta: { anio: anioHasta, mes: mesHasta }, data };
+  dpRenderReporteConcepto(data, kwRaw);
+};
+
+function dpRenderReporteConcepto(data, keyword) {
+  const kpisEl = document.getElementById('dp-concepto-kpis');
+  const bodyEl = document.getElementById('dp-concepto-resultados');
+  if (!data.length) {
+    kpisEl.innerHTML = '';
+    bodyEl.innerHTML = `<div style="text-align:center;padding:30px;color:#5C6B80;">No se encontraron cargos que coincidan con "${esc(keyword)}".</div>`;
+    return;
+  }
+  const totalPagado = data.reduce((s, d) => s + d.pagado, 0);
+  const totalPendiente = data.reduce((s, d) => s + d.pendiente, 0);
+  const totalCondonado = data.reduce((s, d) => s + d.condonado, 0);
+  kpisEl.innerHTML = `
+    <div class="dp-stat"><div class="dp-stat-val" style="color:#1A7A4A;">${fmtMXN(totalPagado)}</div><div class="dp-stat-lbl">Pagado</div></div>
+    <div class="dp-stat"><div class="dp-stat-val" style="color:#E67E22;">${fmtMXN(totalPendiente)}</div><div class="dp-stat-lbl">Pendiente</div></div>
+    <div class="dp-stat"><div class="dp-stat-val" style="color:#8E44AD;">${fmtMXN(totalCondonado)}</div><div class="dp-stat-lbl">Condonado</div></div>
+    <div class="dp-stat"><div class="dp-stat-val">${data.length}</div><div class="dp-stat-lbl">Socios</div></div>`;
+  bodyEl.innerHTML = `<table style="width:100%;border-collapse:collapse;font-size:12.5px;">
+    <thead><tr style="border-bottom:1.5px solid #E8E0D4;">
+      <th style="text-align:left;padding:8px 6px;color:#5C6B80;font-size:10.5px;text-transform:uppercase;">Socio</th>
+      <th style="text-align:right;padding:8px 6px;color:#5C6B80;font-size:10.5px;text-transform:uppercase;">Pagado</th>
+      <th style="text-align:right;padding:8px 6px;color:#5C6B80;font-size:10.5px;text-transform:uppercase;">Pendiente</th>
+      <th style="text-align:left;padding:8px 6px;color:#5C6B80;font-size:10.5px;text-transform:uppercase;">Periodos pagados</th>
+    </tr></thead>
+    <tbody>
+      ${data.map(d => `<tr style="border-bottom:1px solid #F0EBE0;">
+        <td style="padding:8px 6px;"><div style="font-weight:700;color:#0D1B2A;">${esc(d.nombre)}</div><div style="font-size:10.5px;color:#5C6B80;">${d.numeroSocio ? '#' + esc(String(d.numeroSocio)) : ''}</div></td>
+        <td style="padding:8px 6px;text-align:right;font-weight:700;color:${d.pagado > 0 ? '#1A7A4A' : '#C0C8D8'};">${d.pagado > 0 ? fmtMXN(d.pagado) : '—'}</td>
+        <td style="padding:8px 6px;text-align:right;font-weight:700;color:${d.pendiente > 0 ? '#E67E22' : '#C0C8D8'};">${d.pendiente > 0 ? fmtMXN(d.pendiente) : '—'}</td>
+        <td style="padding:8px 6px;font-size:11px;color:#5C6B80;">${d.periodosPagados.map(p => esc(p.periodo)).join(', ') || '—'}</td>
+      </tr>`).join('')}
+    </tbody>
+  </table>`;
+}
+
+// Reporte imprimible del resultado de dpBuscarCuotasConcepto()
+window.dpImprimirReporteConcepto = function() {
+  const ctx = window._dpConceptoAgrupado;
+  if (!ctx || !ctx.data.length) { dpShowToast('Primero busca un concepto con resultados', 'info'); return; }
+  const data = [...ctx.data].sort((a, b) => (b.pagado + b.pendiente) - (a.pagado + a.pendiente));
+  const win = window.open('', '_blank');
+  if (!win) { dpShowToast('Permite ventanas emergentes para el reporte', 'error'); return; }
+  const fmt = n => fmtMXN(n);
+  const hoy = new Date().toLocaleDateString('es-MX', { day: '2-digit', month: 'long', year: 'numeric' });
+  const totalPagado = data.reduce((s, d) => s + d.pagado, 0);
+  const totalPendiente = data.reduce((s, d) => s + d.pendiente, 0);
+  const totalCondonado = data.reduce((s, d) => s + d.condonado, 0);
+
+  const cuerpo = data.map((d, i) => {
+    const periodosPag = d.periodosPagados.map(p => p.periodo).join(' · ') || '—';
+    const periodosPend = d.periodosPendientes.map(p => p.periodo).join(' · ') || '—';
+    return `<tr>
+      <td class="idx">${i + 1}</td>
+      <td>${esc(d.nombre)}${d.numeroSocio ? `<div class="sub">#${esc(String(d.numeroSocio))}</div>` : ''}</td>
+      <td class="det">${esc(periodosPag)}</td>
+      <td class="num bold">${d.pagado > 0 ? fmt(d.pagado) : '—'}</td>
+      <td class="det">${esc(periodosPend)}</td>
+      <td class="num c">${d.pendiente > 0 ? fmt(d.pendiente) : '—'}</td>
+    </tr>`;
+  }).join('');
+
+  const nombreMes = idx => MESES_ORD[Math.max(0, (idx || 1) - 1)] || '';
+  const rangoTxt = (ctx.desde.anio || ctx.hasta.anio)
+    ? `Periodo: ${ctx.desde.anio ? `${nombreMes(ctx.desde.mes)} ${ctx.desde.anio}` : 'inicio'} — ${ctx.hasta.anio ? `${nombreMes(ctx.hasta.mes)} ${ctx.hasta.anio}` : 'actual'}`
+    : 'Todos los periodos';
+
+  const html = `<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><title>Cuotas por concepto — Club de Leones Veracruz</title>
+  <style>
+    @page { size: letter portrait; margin: 12mm; }
+    * { box-sizing: border-box; }
+    body { font-family: 'DM Sans', Arial, sans-serif; color: #0D1B2A; font-size: 12px; line-height: 1.5; max-width: 960px; margin: auto; padding: 10px; }
+    h1 { font-family: 'Playfair Display', serif; font-size: 18px; text-align: center; margin: 0 0 2px; }
+    .sub-h { text-align: center; color: #5C6B80; font-size: 11px; margin-bottom: 16px; }
+    .kpis { display: flex; gap: 10px; margin-bottom: 16px; }
+    .kpi { flex: 1; border: 1.5px solid #EDE8DF; border-radius: 8px; padding: 10px 12px; border-left-width: 4px; }
+    .kpi .v { font-family: 'Playfair Display', serif; font-size: 16px; font-weight: 800; }
+    .kpi .l { font-size: 9.5px; color: #5C6B80; text-transform: uppercase; letter-spacing: .5px; }
+    table { width: 100%; border-collapse: collapse; }
+    th { background: #0D1B2A; color: #fff; text-align: left; padding: 7px 8px; font-size: 10.5px; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    th.num { text-align: right; }
+    td { padding: 6px 8px; border-bottom: 1px solid #eee; vertical-align: top; }
+    td.idx { color: #5C6B80; text-align: right; width: 24px; }
+    td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+    td.bold { font-weight: 800; color: #1A7A4A; }
+    td.c { color: #E67E22; font-weight: 800; }
+    td.det { font-size: 10px; color: #5A6B80; }
+    .sub { font-size: 10px; color: #5C6B80; }
+    tr.tot td { font-weight: 800; border-top: 2px solid #0D1B2A; background: #FBF7EF; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    .acciones { text-align: center; margin: 16px 0; }
+    .acciones button { padding: 9px 20px; background: #C9973A; color: #fff; border: none; border-radius: 7px; font-size: 13px; font-weight: 700; cursor: pointer; }
+    @media print { .acciones { display: none !important; } body { padding: 0; } tr { break-inside: avoid; } }
+  </style></head><body>
+    <div class="acciones"><button onclick="window.print()">🖨 Imprimir / Guardar PDF</button></div>
+    <h1>CUOTAS POR CONCEPTO — "${esc(ctx.keyword.toUpperCase())}"</h1>
+    <div class="sub-h">Club de Leones de Veracruz, A.C. &nbsp;·&nbsp; ${esc(rangoTxt)} &nbsp;·&nbsp; ${esc(hoy)}</div>
+
+    <div class="kpis">
+      <div class="kpi" style="border-left-color:#1A7A4A;"><div class="v" style="color:#1A7A4A;">${fmt(totalPagado)}</div><div class="l">Pagado</div></div>
+      <div class="kpi" style="border-left-color:#E67E22;"><div class="v" style="color:#E67E22;">${fmt(totalPendiente)}</div><div class="l">Pendiente</div></div>
+      <div class="kpi" style="border-left-color:#8E44AD;"><div class="v" style="color:#8E44AD;">${fmt(totalCondonado)}</div><div class="l">Condonado</div></div>
+      <div class="kpi" style="border-left-color:#0D1B2A;"><div class="v">${data.length}</div><div class="l">Socios</div></div>
+    </div>
+
+    <table>
+      <thead><tr><th class="idx"></th><th>Socio</th><th>Periodos pagados</th><th class="num">Pagado</th><th>Periodos pendientes</th><th class="num">Pendiente</th></tr></thead>
+      <tbody>
+        ${cuerpo}
+        <tr class="tot"><td></td><td>TOTAL (${data.length} socio${data.length !== 1 ? 's' : ''})</td><td></td><td class="num">${fmt(totalPagado)}</td><td></td><td class="num">${fmt(totalPendiente)}</td></tr>
+      </tbody>
+    </table>
+
+    <scr`+`ipt>setTimeout(function(){try{window.focus();}catch(e){}},150);</scr`+`ipt>
+  </body></html>`;
+
+  win.document.write(html);
+  win.document.close();
+};
+
 // Lista de asistencia imprimible para la Junta de Directiva.
 // Los directivos aparecen prellenados en el orden jerárquico de sus cargos;
 // al final se agregan renglones en blanco para que socios no directivos se anoten.
@@ -18895,7 +19101,7 @@ window.finCategoriaPDF = function() {
 
 // IMPORTANTE: APP_VERSION debe coincidir con "version" en version.json y con
 // VERSION en sw.js. Bumpear las 3 juntas o el banner de update queda pegado.
-const APP_VERSION = '20260715-002';
+const APP_VERSION = '20260723-001';
 
 // Referencia al SW en espera (si existe), compartida entre ambas rutas de actualización
 window._pendingSW = null;
@@ -22542,6 +22748,7 @@ body.damas-theme .filter-tab-active { background:rgba(139,74,107,0.15); color:#5
               <option value="4">Adeudo: 4 meses o más</option>
             </select>
             <button onclick="dpPagosReporteMorosos()" style="padding:8px 16px;background:#0D1B2A;color:#E8B84B;border:none;border-radius:9px;font-family:'DM Sans',sans-serif;font-size:12px;font-weight:700;cursor:pointer;">🖨 Imprimir morosos</button>
+            <button onclick="dpAbrirReporteConcepto()" style="padding:8px 16px;background:#8E44AD;color:#fff;border:none;border-radius:9px;font-family:'DM Sans',sans-serif;font-size:12px;font-weight:700;cursor:pointer;">🔎 Cuotas por concepto</button>
             <button onclick="dpPagosLoad(true)" style="padding:8px 16px;background:linear-gradient(135deg,#E8B84B,#C9973A);color:#0D1B2A;border:none;border-radius:9px;font-family:'DM Sans',sans-serif;font-size:12px;font-weight:700;cursor:pointer;">🔄 Actualizar</button>
           </div>
         </div>
@@ -23818,6 +24025,63 @@ body.damas-theme .filter-tab-active { background:rgba(139,74,107,0.15); color:#5
       <button onclick="dpImprimirSelCerrar()" style="padding:10px 20px;background:#F5F0E8;color:#0D1B2A;border:none;border-radius:10px;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;cursor:pointer;">Cancelar</button>
       <button onclick="dpImprimirSelConfirmar(true)" style="padding:10px 20px;background:#fff;color:#0D1B2A;border:2px solid #E8E0D4;border-radius:10px;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;cursor:pointer;">Imprimir todos</button>
       <button onclick="dpImprimirSelConfirmar(false)" style="padding:10px 20px;background:linear-gradient(135deg,#E8B84B,#C9973A);color:#0D1B2A;border:none;border-radius:10px;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;cursor:pointer;">Imprimir seleccionados</button>
+    </div>
+  </div>
+</div>
+
+<!-- ════ MODAL: CUOTAS POR CONCEPTO ════ -->
+<div id="dp-modal-concepto" style="display:none;position:fixed;inset:0;background:rgba(13,27,42,0.7);backdrop-filter:blur(4px);z-index:10000;align-items:center;justify-content:center;padding:24px;overflow-y:auto;" onclick="if(event.target===this)dpCerrarModalConcepto()">
+  <div style="background:#fff;border-radius:18px;width:100%;max-width:720px;box-shadow:0 24px 80px rgba(13,27,42,0.35);padding:24px 28px;max-height:90vh;overflow-y:auto;">
+    <div style="font-family:'Playfair Display',serif;font-size:20px;font-weight:700;color:#0D1B2A;margin-bottom:4px;">🔎 Cuotas por concepto</div>
+    <div style="font-size:12px;color:#5C6B80;margin-bottom:16px;">Busca quién ha pagado (o debe) un concepto específico. Revisa tanto los campos fijos del recibo como el "concepto extra", donde a veces se capturan cuotas especiales (ej. baile, coronación, eventos) con etiquetas distintas.</div>
+
+    <label class="dp-lbl">Concepto (palabra clave)</label>
+    <input id="dp-concepto-kw" class="dp-inp" list="dp-concepto-sugerencias" placeholder="Ej: coronación, navidad, percápita..." style="margin:0 0 14px;">
+    <datalist id="dp-concepto-sugerencias">
+      <option value="Cuota Socio"><option value="Cuota Dama"><option value="Percápita">
+      <option value="Baile de Coronación"><option value="Navidad"><option value="Mutualista">
+    </datalist>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:10px;margin-bottom:6px;">
+      <div>
+        <label class="dp-lbl">Mes desde</label>
+        <select id="dp-concepto-mes-desde" class="dp-inp" style="margin:0;">
+          <option value="0">— Cualquiera —</option>
+          <option value="1">Enero</option><option value="2">Febrero</option><option value="3">Marzo</option><option value="4">Abril</option>
+          <option value="5">Mayo</option><option value="6">Junio</option><option value="7">Julio</option><option value="8">Agosto</option>
+          <option value="9">Septiembre</option><option value="10">Octubre</option><option value="11">Noviembre</option><option value="12">Diciembre</option>
+        </select>
+      </div>
+      <div>
+        <label class="dp-lbl">Año desde</label>
+        <input id="dp-concepto-anio-desde" type="number" class="dp-inp" placeholder="Ej: 2026" style="margin:0;">
+      </div>
+      <div>
+        <label class="dp-lbl">Mes hasta</label>
+        <select id="dp-concepto-mes-hasta" class="dp-inp" style="margin:0;">
+          <option value="0">— Cualquiera —</option>
+          <option value="1">Enero</option><option value="2">Febrero</option><option value="3">Marzo</option><option value="4">Abril</option>
+          <option value="5">Mayo</option><option value="6">Junio</option><option value="7">Julio</option><option value="8">Agosto</option>
+          <option value="9">Septiembre</option><option value="10">Octubre</option><option value="11">Noviembre</option><option value="12">Diciembre</option>
+        </select>
+      </div>
+      <div>
+        <label class="dp-lbl">Año hasta</label>
+        <input id="dp-concepto-anio-hasta" type="number" class="dp-inp" placeholder="Ej: 2026" style="margin:0;">
+      </div>
+    </div>
+    <div style="font-size:11px;color:#8A93A3;margin-bottom:16px;">Deja los años en blanco para buscar en todos los periodos.</div>
+
+    <div style="display:flex;justify-content:flex-end;gap:10px;margin-bottom:18px;">
+      <button onclick="dpBuscarCuotasConcepto()" style="padding:10px 20px;background:linear-gradient(135deg,#E8B84B,#C9973A);color:#0D1B2A;border:none;border-radius:10px;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;cursor:pointer;">Buscar</button>
+    </div>
+
+    <div id="dp-concepto-kpis" style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:16px;"></div>
+    <div id="dp-concepto-resultados" style="overflow:auto;max-height:340px;border-top:1px solid #F0EBE0;padding-top:8px;"></div>
+
+    <div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-top:18px;">
+      <button onclick="dpCerrarModalConcepto()" style="padding:10px 20px;background:#F5F0E8;color:#0D1B2A;border:none;border-radius:10px;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;cursor:pointer;">Cerrar</button>
+      <button onclick="dpImprimirReporteConcepto()" style="padding:10px 20px;background:#0D1B2A;color:#E8B84B;border:none;border-radius:10px;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;cursor:pointer;">🖨 Imprimir reporte</button>
     </div>
   </div>
 </div>
