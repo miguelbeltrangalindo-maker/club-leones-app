@@ -9288,14 +9288,60 @@ const DP_CONCEPTO_FIJOS = [
   { key: 'c5', label: 'Navidad Escuela Club' },
 ];
 
+// Lista, deduplicada (sin distinguir mayúsculas/acentos) y ordenada por
+// frecuencia, de las etiquetas que se han usado en el campo "concepto extra"
+// (c7label) de los recibos ya cargados — así el admin ve de un vistazo qué se
+// ha estado cobrando fuera de los campos fijos, en vez de adivinar.
+function dpPoblarConceptosExtra() {
+  const grp = document.getElementById('dp-concepto-extras-optgroup');
+  if (!grp) return;
+  const rows = window._dpPagosRows;
+  if (!rows || !rows.length) {
+    grp.innerHTML = '<option value="" disabled>Carga primero el estado de cuenta</option>';
+    return;
+  }
+  const conteo = {};
+  rows.forEach(row => {
+    (row.recibos || []).forEach(r => {
+      const label = (r.c7label || '').trim();
+      if (!label || Number(r.c7 || 0) <= 0) return;
+      const key = dpQuitarAcentos(label);
+      if (!conteo[key]) conteo[key] = { label, n: 0 };
+      conteo[key].n++;
+    });
+  });
+  const lista = Object.values(conteo).sort((a, b) => b.n - a.n || a.label.localeCompare(b.label, 'es'));
+  grp.innerHTML = lista.length
+    ? lista.map(c => `<option value="${esc(c.label)}">${esc(c.label)} (${c.n})</option>`).join('')
+    : '<option value="" disabled>(ninguno capturado todavía)</option>';
+  const hint = document.getElementById('dp-concepto-extras-hint');
+  if (hint) hint.textContent = lista.length ? `${lista.length} concepto${lista.length !== 1 ? 's' : ''} extra distinto${lista.length !== 1 ? 's' : ''} encontrado${lista.length !== 1 ? 's' : ''} en los recibos.` : '';
+}
+
+window.dpConceptoSelectChange = function() {
+  const sel = document.getElementById('dp-concepto-select');
+  const input = document.getElementById('dp-concepto-kw');
+  if (sel.value === '__otro__') {
+    input.style.display = '';
+    input.value = '';
+    setTimeout(() => input.focus(), 30);
+  } else {
+    input.style.display = 'none';
+    input.value = sel.value;
+  }
+};
+
 window.dpAbrirReporteConcepto = function() {
   const modal = document.getElementById('dp-modal-concepto');
   if (!modal) return;
   document.getElementById('dp-concepto-kpis').innerHTML = '';
   document.getElementById('dp-concepto-resultados').innerHTML = '';
+  document.getElementById('dp-concepto-select').value = '';
+  document.getElementById('dp-concepto-kw').value = '';
+  document.getElementById('dp-concepto-kw').style.display = 'none';
   window._dpConceptoAgrupado = null;
+  dpPoblarConceptosExtra();
   modal.style.display = 'flex';
-  setTimeout(() => document.getElementById('dp-concepto-kw')?.focus(), 50);
 };
 window.dpCerrarModalConcepto = function() {
   const modal = document.getElementById('dp-modal-concepto');
@@ -9305,8 +9351,9 @@ window.dpCerrarModalConcepto = function() {
 window.dpBuscarCuotasConcepto = function() {
   const rows = window._dpPagosRows;
   if (!rows || !rows.length) { dpShowToast('Carga primero el estado de cuenta', 'info'); return; }
-  const kwRaw = (document.getElementById('dp-concepto-kw').value || '').trim();
-  if (!kwRaw) { dpShowToast('Escribe una palabra clave del concepto (ej. "coronación", "navidad")', 'error'); return; }
+  const sel = document.getElementById('dp-concepto-select');
+  const kwRaw = (sel.value === '__otro__' ? document.getElementById('dp-concepto-kw').value : sel.value || document.getElementById('dp-concepto-kw').value || '').trim();
+  if (!kwRaw) { dpShowToast('Selecciona o escribe un concepto para buscar', 'error'); return; }
   const kw = dpQuitarAcentos(kwRaw);
 
   const anioDesde = parseInt(document.getElementById('dp-concepto-anio-desde').value, 10) || 0;
@@ -19101,7 +19148,7 @@ window.finCategoriaPDF = function() {
 
 // IMPORTANTE: APP_VERSION debe coincidir con "version" en version.json y con
 // VERSION en sw.js. Bumpear las 3 juntas o el banner de update queda pegado.
-const APP_VERSION = '20260723-001';
+const APP_VERSION = '20260724-001';
 
 // Referencia al SW en espera (si existe), compartida entre ambas rutas de actualización
 window._pendingSW = null;
@@ -24035,12 +24082,24 @@ body.damas-theme .filter-tab-active { background:rgba(139,74,107,0.15); color:#5
     <div style="font-family:'Playfair Display',serif;font-size:20px;font-weight:700;color:#0D1B2A;margin-bottom:4px;">🔎 Cuotas por concepto</div>
     <div style="font-size:12px;color:#5C6B80;margin-bottom:16px;">Busca quién ha pagado (o debe) un concepto específico. Revisa tanto los campos fijos del recibo como el "concepto extra", donde a veces se capturan cuotas especiales (ej. baile, coronación, eventos) con etiquetas distintas.</div>
 
-    <label class="dp-lbl">Concepto (palabra clave)</label>
-    <input id="dp-concepto-kw" class="dp-inp" list="dp-concepto-sugerencias" placeholder="Ej: coronación, navidad, percápita..." style="margin:0 0 14px;">
-    <datalist id="dp-concepto-sugerencias">
-      <option value="Cuota Socio"><option value="Cuota Dama"><option value="Percápita">
-      <option value="Baile de Coronación"><option value="Navidad"><option value="Mutualista">
-    </datalist>
+    <label class="dp-lbl">Concepto</label>
+    <select id="dp-concepto-select" class="dp-inp" onchange="dpConceptoSelectChange()" style="margin:0 0 6px;cursor:pointer;background-image:url('data:image/svg+xml;charset=UTF-8,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 20 20%22 fill=%22%235C6B80%22%3E%3Cpath fill-rule=%22evenodd%22 d=%22M5.23 7.21a.75.75 0 011.06.02L10 11.19l3.71-3.96a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z%22 clip-rule=%22evenodd%22/%3E%3C/svg%3E');background-repeat:no-repeat;background-position:right 12px center;background-size:18px;-webkit-appearance:none;appearance:none;padding-right:38px;">
+      <option value="">— Selecciona un concepto —</option>
+      <optgroup label="Conceptos fijos del recibo">
+        <option value="Cuota Socio">① Cuota Socio</option>
+        <option value="Cuota Dama">② Cuota Dama</option>
+        <option value="Percápita">③ Percápita</option>
+        <option value="Baile de Coronación">④ Baile de Coronación</option>
+        <option value="Navidad Escuela Club">⑤ Navidad Escuela Club</option>
+        <option value="Mutualista">⑥ Mutualista</option>
+      </optgroup>
+      <optgroup label="Conceptos extra ya capturados" id="dp-concepto-extras-optgroup">
+        <option value="" disabled>Abre la búsqueda para verlos</option>
+      </optgroup>
+      <option value="__otro__">✏️ Otra palabra clave…</option>
+    </select>
+    <input id="dp-concepto-kw" class="dp-inp" placeholder="Escribe la palabra clave del concepto..." style="display:none;margin:0 0 14px;">
+    <div id="dp-concepto-extras-hint" style="font-size:11px;color:#8A93A3;margin-bottom:14px;"></div>
 
     <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:10px;margin-bottom:6px;">
       <div>
