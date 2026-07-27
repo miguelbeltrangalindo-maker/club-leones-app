@@ -14756,6 +14756,9 @@ window.rsvRender = function() {
     // Borra la reserva + todos los movimientos vinculados (ingresos y egresos de devolución).
     const btnEliminar = isAdminFull()
       ? `<button onclick="rsvEliminarReserva('${esc(r.id)}')" style="padding:6px 10px;background:rgba(192,57,43,0.05);color:#C0392B;border:none;border-radius:7px;font-size:11.5px;font-weight:700;cursor:pointer;" title="Limpieza permanente (admin) — borra la reserva y TODOS los movimientos vinculados. Solo para pruebas o errores excepcionales.">🧹</button>` : '';
+    // Fianza ya registrada como movimiento y aún sin resolver (ni devuelta ni retenida)
+    const btnDevolverFianza = (r.fianzaMovimientoId && !r.fianzaTipoDevolucion)
+      ? `<button onclick="rsvAbrirModalDevolverFianza('${esc(r.id)}')" style="padding:6px 12px;background:rgba(41,128,185,0.1);color:#2980B9;border:none;border-radius:7px;font-size:11.5px;font-weight:700;cursor:pointer;">↩️ Devolver fianza</button>` : '';
 
     return `<div class="dp-card" style="padding:14px 16px;border-left:4px solid ${color};${opacityStyle}">
       <div style="display:flex;align-items:flex-start;gap:14px;flex-wrap:wrap;">
@@ -14768,7 +14771,7 @@ window.rsvRender = function() {
           <div style="font-size:12.5px;color:#3A4A5C;margin-bottom:2px;"><b>${esc(r.salonNombre||'—')}</b> · ${esc(fechaTxt)} · ${esc(horaTxt)}</div>
           <div style="font-size:11.5px;color:#5C6B80;">👤 ${esc(r.anfitrion||'—')}${r.contacto?` · 📞 ${esc(r.contacto)}`:''}${r.numInvitados?` · 👥 ${Number(r.numInvitados)} invitados`:''}</div>
           ${r.observaciones?`<div style="font-size:11.5px;color:#5C6B80;margin-top:4px;font-style:italic;">📝 ${esc(r.observaciones)}</div>`:''}
-          ${Number(r.fianzaMonto||0) > 0 ? `<div style="font-size:11px;color:#5A6A7A;margin-top:4px;">🛡️ Fianza ${fmt(r.fianzaMonto)} ${r.fianzaRecibida ? '<span style="color:#1A7A4A;font-weight:700;">· recibida ✓</span>' : '<span style="color:#E67E22;font-weight:700;">· pendiente</span>'}${r.fianzaNota?` · ${esc(r.fianzaNota)}`:''}</div>` : ''}
+          ${Number(r.fianzaMonto||0) > 0 ? `<div style="font-size:11px;color:#5A6A7A;margin-top:4px;">🛡️ Fianza ${fmt(r.fianzaMonto)} ${r.fianzaMovimientoId ? '<span style="color:#1A7A4A;font-weight:700;">· registrada ✓</span>' : r.fianzaRecibida ? '<span style="color:#1A7A4A;font-weight:700;">· recibida ✓</span>' : '<span style="color:#E67E22;font-weight:700;">· pendiente</span>'}${r.fianzaTipoDevolucion ? ` · ${r.fianzaTipoDevolucion==='total'?'devuelta total':r.fianzaTipoDevolucion==='parcial'?'devuelta parcial '+fmt(r.fianzaMontoDevuelto):'retenida por daños'}` : (r.fianzaMovimientoId ? ' · <span style="color:#C47621;">pendiente de devolver</span>' : '')}${r.fianzaNota?` · ${esc(r.fianzaNota)}`:''}</div>` : ''}
           ${cancelada ? rsvCancelacionInfoHTML(r, fmt) : ''}
         </div>
         <div style="text-align:right;min-width:160px;">
@@ -14776,7 +14779,7 @@ window.rsvRender = function() {
           ${total > 0 ? `<div style="font-size:11px;color:${saldo>0?'#C0392B':'#1A7A4A'};font-weight:600;margin-top:1px;">Pagado ${fmt(pagado)} · Saldo ${fmt(saldo)}</div>` : ''}
           ${Number(r.descuentoAplicado||0) > 0 ? `<div style="font-size:10.5px;color:#5C6B80;margin-top:1px;">Descuento ${fmt(r.descuentoAplicado)}</div>` : ''}
           ${r.aplicaIva ? `<div style="font-size:10.5px;color:#C9973A;margin-top:1px;font-weight:600;">🧾 Incluye IVA 16% ${fmt(Number(r.iva||0))}</div>` : ''}
-          <div style="margin-top:8px;display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap;">${btnPago}${btnEditar}${btnCancelar}${btnEliminar}</div>
+          <div style="margin-top:8px;display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap;">${btnPago}${btnEditar}${btnDevolverFianza}${btnCancelar}${btnEliminar}</div>
         </div>
       </div>
     </div>`;
@@ -15567,7 +15570,10 @@ window.rsvOnPagoTipoChange = function() {
     const desc  = moneyVal('rsv-reserva-descuento');
     const hePrecio = moneyVal('rsv-reserva-he-precio');
     const heCantidad = Number(document.getElementById('rsv-reserva-he-cantidad')?.value || 0);
-    const total = Math.max(0, costo + (hePrecio * heCantidad) - desc);
+    const aplicaIva = document.getElementById('rsv-reserva-aplica-iva')?.checked || false;
+    const subtotal = Math.max(0, costo + (hePrecio * heCantidad) - desc);
+    const iva = aplicaIva ? +(subtotal * 0.16).toFixed(2) : 0;
+    const total = subtotal + iva;
     inp.value = total ? _moneyFmt(total) : '';
     inp.readOnly = true;
     inp.style.background = '#F5F0E8';
@@ -15632,6 +15638,18 @@ window.rsvAbrirModalReserva = function(id) {
   document.getElementById('rsv-reserva-fianza-monto').value     = r?.fianzaMonto ? _moneyFmt(r.fianzaMonto) : '';
   document.getElementById('rsv-reserva-fianza-recibida').checked = !!r?.fianzaRecibida;
   document.getElementById('rsv-reserva-fianza-nota').value       = r?.fianzaNota || '';
+  document.getElementById('rsv-reserva-fianza-destino').value    = r?.fianzaDestino || 'banco';
+  const fianzaRegistrada = !!r?.fianzaMovimientoId;
+  ['rsv-reserva-fianza-monto','rsv-reserva-fianza-destino','rsv-reserva-fianza-recibida'].forEach(elId => {
+    const el = document.getElementById(elId);
+    if (el) el.disabled = fianzaRegistrada;
+  });
+  const fianzaInfo = document.getElementById('rsv-reserva-fianza-info');
+  if (fianzaInfo) {
+    fianzaInfo.innerHTML = fianzaRegistrada
+      ? `✓ Fianza ya registrada como ingreso en ${r.fianzaDestino === 'caja' ? 'Caja' : 'Banco'}${r.fianzaRegistradaEn ? ' el ' + new Date(r.fianzaRegistradaEn).toLocaleDateString('es-MX') : ''}. Para devolverla (total, parcial o retención), usa el botón "↩️ Devolver fianza" desde la lista de reservas.`
+      : 'Al guardar con "Fianza recibida" marcada, se registrará un ingreso en el destino elegido. La devolución (total, parcial o retención por daños) se hace después con el botón "↩️ Devolver fianza" en la lista.';
+  }
   // Reset sub-bloque de pago
   document.getElementById('rsv-reserva-pago-monto').value = '';
   document.getElementById('rsv-reserva-pago-tipo').value = 'anticipo';
@@ -15678,10 +15696,11 @@ window.rsvGuardarReserva = async function() {
   const aplicaIva = document.getElementById('rsv-reserva-aplica-iva').checked;
   const subtotalReserva = Math.max(0, costo + heCosto - desc);
   const ivaReserva = aplicaIva ? +(subtotalReserva * 0.16).toFixed(2) : 0;
-  // Fianza (informativa)
-  const fianzaMonto    = moneyVal('rsv-reserva-fianza-monto');
-  const fianzaRecibida = document.getElementById('rsv-reserva-fianza-recibida').checked;
-  const fianzaNota     = document.getElementById('rsv-reserva-fianza-nota').value.trim();
+  // Fianza
+  const fianzaMonto     = moneyVal('rsv-reserva-fianza-monto');
+  const fianzaRecibida  = document.getElementById('rsv-reserva-fianza-recibida').checked;
+  const fianzaNota      = document.getElementById('rsv-reserva-fianza-nota').value.trim();
+  const fianzaDestinoIn = document.getElementById('rsv-reserva-fianza-destino').value || 'banco';
 
   if (!salonId)   { dpShowToast('Selecciona un salón','error'); return; }
   if (!fecha)     { dpShowToast('La fecha es obligatoria','error'); return; }
@@ -15692,6 +15711,17 @@ window.rsvGuardarReserva = async function() {
   const salon = (window._rsvSalones || []).find(x => x.id === salonId);
   const prev  = id ? (window._rsvReservas || []).find(x => x.id === id) : null;
   const tienePagosPrev = prev && (Number(prev.anticipo||0) + Number(prev.saldoPagado||0)) > 0;
+
+  // Si la fianza ya fue registrada como movimiento financiero, sus datos quedan bloqueados
+  // en este modal (se editan solo vía "Devolver fianza"); si aún no, tomamos lo del formulario.
+  const fianzaYaRegistrada = !!prev?.fianzaMovimientoId;
+  const fianzaMontoFinal    = fianzaYaRegistrada ? Number(prev.fianzaMonto||0) : fianzaMonto;
+  const fianzaRecibidaFinal = fianzaYaRegistrada ? true : fianzaRecibida;
+  const fianzaNotaFinal     = fianzaYaRegistrada ? (prev.fianzaNota||'') : fianzaNota;
+  const fianzaDestino       = fianzaYaRegistrada ? (prev.fianzaDestino||'banco') : fianzaDestinoIn;
+  if (!fianzaYaRegistrada && fianzaRecibida && fianzaMonto <= 0) {
+    dpShowToast('Ingresa el monto de la fianza para poder marcarla como recibida','error'); return;
+  }
 
   // Si pone "Confirmada" sin pagos previos → exigir pago en el sub-bloque
   let pagoTipo = null, pagoMonto = 0, pagoFecha = '', pagoDestino = '';
@@ -15731,7 +15761,7 @@ window.rsvGuardarReserva = async function() {
       horasExtraPrecio: hePrecio, horasExtraCantidad: heCantidad, horasExtraCosto: heCosto,
       aplicaIva, iva: ivaReserva,
       estado,
-      fianzaMonto, fianzaRecibida, fianzaNota,
+      fianzaMonto: fianzaMontoFinal, fianzaRecibida: fianzaRecibidaFinal, fianzaNota: fianzaNotaFinal, fianzaDestino,
       actualizadoEn: new Date().toISOString(),
       actualizadoPor: window.currentUser?.uid || '',
     };
@@ -15779,6 +15809,18 @@ window.rsvGuardarReserva = async function() {
       await logAuditoria('pago_reserva', { reservaId, tipo: pagoTipo, monto: pagoMonto, evento, salon: salon?.nombre });
     }
 
+    // Si se marcó "Fianza recibida" por primera vez, registrar el ingreso correspondiente
+    if (!fianzaYaRegistrada && fianzaRecibidaFinal && fianzaMontoFinal > 0 && reservaId) {
+      const conceptoFianza = `Fianza — ${salon?.nombre || 'Salón'} · ${evento}`.trim();
+      const movFianzaId = await finAutoMovimiento('ingreso', 'Fianzas de salones', conceptoFianza, fianzaMontoFinal, new Date().toISOString().slice(0,10), 'reservacion_fianza', fianzaDestino, { reservaId });
+      await updateDoc(doc(db,'reservaciones',reservaId), {
+        fianzaMovimientoId: movFianzaId || null,
+        fianzaRegistradaEn: new Date().toISOString(),
+        fianzaRegistradaPor: window.currentUser?.uid || '',
+      });
+      await logAuditoria('fianza_registrada', { reservaId, monto: fianzaMontoFinal, destino: fianzaDestino, evento, salon: salon?.nombre });
+    }
+
     dpShowToast(id ? '✅ Reserva actualizada' : '✅ Reserva creada','success');
     rsvCerrarModalReserva();
     if (window._finMovimientos) window._finMovimientos = []; // invalidar cache
@@ -15810,7 +15852,7 @@ window.rsvAbrirModalCancelar = function(id) {
   document.getElementById('rsv-cancelar-resumen').innerHTML = `
     <div style="display:flex;justify-content:space-between;margin-bottom:3px;"><span>Costo total</span><b>${fmt(total)}</b></div>
     <div style="display:flex;justify-content:space-between;margin-bottom:3px;"><span>Pagado</span><b style="color:${tienePagos?'#1A7A4A':'#5C6B80'};">${fmt(totalPagado)}</b></div>
-    ${Number(r.fianzaMonto||0) > 0 ? `<div style="display:flex;justify-content:space-between;margin-top:3px;padding-top:3px;border-top:1px dashed #EDE8DF;"><span>🛡️ Fianza ${r.fianzaRecibida?'recibida':'pendiente'}</span><b style="color:#5A6A7A;">${fmt(r.fianzaMonto)}</b></div>` : ''}`;
+    ${Number(r.fianzaMonto||0) > 0 ? `<div style="display:flex;justify-content:space-between;margin-top:3px;padding-top:3px;border-top:1px dashed #EDE8DF;"><span>🛡️ Fianza ${r.fianzaMovimientoId ? 'registrada' : (r.fianzaRecibida?'recibida':'pendiente')}</span><b style="color:#5A6A7A;">${fmt(r.fianzaMonto)}</b></div>${r.fianzaMovimientoId && !r.fianzaTipoDevolucion ? `<div style="font-size:11px;color:#C47621;margin-top:2px;">⚠️ Aún no se ha devuelto. Resuélvela por separado con el botón "↩️ Devolver fianza" en la lista, antes o después de cancelar.</div>` : ''}` : ''}`;
 
   document.getElementById('rsv-cancelar-devolucion-seccion').style.display = tienePagos ? 'block' : 'none';
   document.getElementById('rsv-cancelar-info-no-pagos').style.display = tienePagos ? 'none' : 'block';
@@ -15918,19 +15960,21 @@ window.rsvEliminarReserva = async function(id) {
   if (!r) return;
   const ingresos = (r.movimientoFinIds || []).length;
   const egresos = (r.movimientosDevolucionIds || []).length;
-  const totalMovs = ingresos + egresos;
+  const fianzaMovs = [r.fianzaMovimientoId, r.fianzaMovimientoDevolucionId].filter(Boolean).length;
+  const totalMovs = ingresos + egresos + fianzaMovs;
 
   let msg = `🧹 LIMPIEZA PERMANENTE\n\n¿Borrar definitivamente la reserva "${r.evento}"?`;
   if (totalMovs > 0) {
     msg += `\n\nEsto también borrará ${totalMovs} movimiento(s) financiero(s) vinculado(s):`;
     if (ingresos > 0) msg += `\n  • ${ingresos} ingreso${ingresos!==1?'s':''} (anticipos / saldos)`;
     if (egresos > 0)  msg += `\n  • ${egresos} egreso${egresos!==1?'s':''} de devolución`;
+    if (fianzaMovs > 0) msg += `\n  • ${fianzaMovs} movimiento(s) de fianza`;
   }
   msg += `\n\n⚠️ Solo usa esta opción para limpiar pruebas o casos excepcionales (ej: pagos multi-destino que la cancelación no maneja). Para cancelar una reserva real, usa el botón 🚫 Cancelar.`;
   if (!confirm(msg)) return;
 
   try {
-    const todosMovs = [...(r.movimientoFinIds || []), ...(r.movimientosDevolucionIds || [])];
+    const todosMovs = [...(r.movimientoFinIds || []), ...(r.movimientosDevolucionIds || []), r.fianzaMovimientoId, r.fianzaMovimientoDevolucionId].filter(Boolean);
     let borrados = 0;
     for (const movId of todosMovs) {
       try {
@@ -16030,6 +16074,111 @@ window.rsvGuardarPago = async function() {
     dpShowToast('Error: ' + e.message, 'error');
   } finally {
     btn.disabled = false; btn.textContent = '💵 Registrar pago';
+  }
+};
+
+// ── Modal Devolver Fianza ──
+window.rsvAbrirModalDevolverFianza = function(reservaId) {
+  const r = (window._rsvReservas || []).find(x => x.id === reservaId);
+  if (!r) return;
+  const fmt = n => '$' + Number(n||0).toLocaleString('es-MX',{minimumFractionDigits:2,maximumFractionDigits:2});
+
+  document.getElementById('rsv-fianza-dev-reserva-id').value = reservaId;
+  document.getElementById('rsv-fianza-dev-evento-lbl').textContent = `Reserva: ${r.evento || '—'} · ${r.salonNombre || '—'}`;
+  document.getElementById('rsv-fianza-dev-resumen').innerHTML = `
+    <div style="display:flex;justify-content:space-between;margin-bottom:3px;"><span>Fianza recibida</span><b>${fmt(r.fianzaMonto)}</b></div>
+    <div style="display:flex;justify-content:space-between;"><span>Registrada en</span><b>${r.fianzaDestino === 'caja' ? 'Caja / efectivo' : 'Banco / transferencia'}</b></div>`;
+  document.querySelectorAll('input[name="rsv-fianza-dev-tipo"]').forEach(i => i.checked = false);
+  document.getElementById('rsv-fianza-dev-detalle').style.display = 'none';
+  document.getElementById('rsv-fianza-dev-monto').value = '';
+  document.getElementById('rsv-fianza-dev-motivo').value = '';
+  document.getElementById('rsv-fianza-dev-fecha').value = new Date().toISOString().slice(0,10);
+  document.getElementById('rsv-fianza-dev-origen').value = r.fianzaDestino || 'banco';
+  document.getElementById('rsv-fianza-dev-modal').style.display = 'flex';
+};
+window.rsvCerrarModalDevolverFianza = function() {
+  document.getElementById('rsv-fianza-dev-modal').style.display = 'none';
+};
+
+window.rsvOnFianzaDevTipoChange = function() {
+  const tipo = document.querySelector('input[name="rsv-fianza-dev-tipo"]:checked')?.value;
+  const id = document.getElementById('rsv-fianza-dev-reserva-id').value;
+  const r = (window._rsvReservas || []).find(x => x.id === id);
+  const detalle = document.getElementById('rsv-fianza-dev-detalle');
+  const moneyWrap = document.getElementById('rsv-fianza-dev-money-wrap');
+  const motivoWrap = document.getElementById('rsv-fianza-dev-motivo-wrap');
+  const montoInp = document.getElementById('rsv-fianza-dev-monto');
+  if (!tipo) { detalle.style.display = 'none'; return; }
+  detalle.style.display = 'block';
+  if (tipo === 'total') {
+    moneyWrap.style.display = 'block';
+    montoInp.value = _moneyFmt(Number(r?.fianzaMonto||0));
+    montoInp.readOnly = true; montoInp.style.background = '#F5F0E8';
+    motivoWrap.style.display = 'none';
+  } else if (tipo === 'parcial') {
+    moneyWrap.style.display = 'block';
+    montoInp.value = ''; montoInp.readOnly = false; montoInp.style.background = '';
+    motivoWrap.style.display = 'block';
+  } else { // retenida (retención total por daños, no se devuelve nada)
+    moneyWrap.style.display = 'none';
+    motivoWrap.style.display = 'block';
+  }
+};
+
+window.rsvConfirmarDevolucionFianza = async function() {
+  const btn = document.getElementById('rsv-fianza-dev-confirmar-btn');
+  const reservaId = document.getElementById('rsv-fianza-dev-reserva-id').value;
+  const r = (window._rsvReservas || []).find(x => x.id === reservaId);
+  if (!r) { dpShowToast('Reserva no encontrada','error'); return; }
+  const tipo = document.querySelector('input[name="rsv-fianza-dev-tipo"]:checked')?.value;
+  if (!tipo) { dpShowToast('Selecciona qué pasó con la fianza','error'); return; }
+
+  const fianzaMonto = Number(r.fianzaMonto||0);
+  let monto = 0;
+  if (tipo === 'total') monto = fianzaMonto;
+  else if (tipo === 'parcial') monto = moneyVal('rsv-fianza-dev-monto');
+
+  if (tipo === 'parcial' && (!monto || monto <= 0 || monto >= fianzaMonto)) {
+    dpShowToast('El monto parcial debe ser mayor a 0 y menor al total de la fianza','error'); return;
+  }
+  const motivo = document.getElementById('rsv-fianza-dev-motivo').value.trim();
+  if ((tipo === 'parcial' || tipo === 'retenida') && !motivo) {
+    dpShowToast('Describe el motivo/desperfectos que justifican la retención','error'); return;
+  }
+  const fecha  = document.getElementById('rsv-fianza-dev-fecha').value || new Date().toISOString().slice(0,10);
+  const origen = document.getElementById('rsv-fianza-dev-origen').value || 'banco';
+
+  btn.disabled = true; btn.textContent = '⏳ Procesando...';
+  try {
+    let movId = null;
+    if (monto > 0) {
+      const concepto = `Devolución de fianza — ${r.salonNombre || 'Salón'} · ${r.evento || ''}`.trim();
+      movId = await finAutoMovimiento('egreso', 'Devolución de fianza', concepto, monto, fecha, 'reservacion_fianza_devolucion', origen, { reservaId });
+    }
+    const update = {
+      fianzaTipoDevolucion: tipo,
+      fianzaMontoDevuelto: monto,
+      fianzaMotivoDevolucion: motivo || '',
+      fianzaMovimientoDevolucionId: movId || null,
+      fianzaDevueltaEn: new Date().toISOString(),
+      fianzaDevueltaPor: window.currentUser?.uid || '',
+    };
+    await updateDoc(doc(db,'reservaciones',reservaId), update);
+    await logAuditoria('fianza_devuelta',
+      { reservaId, tipo, monto, motivo, evento: r.evento, salon: r.salonNombre },
+      { severidad: 'importante' });
+
+    if (window._finMovimientos) window._finMovimientos = []; // invalidar cache
+    dpShowToast(
+      tipo === 'retenida' ? '🛡️ Fianza retenida por daños' : `↩️ Fianza ${tipo === 'total' ? 'devuelta' : 'devuelta parcialmente'}: $${monto.toFixed(2)}`,
+      'success'
+    );
+    rsvCerrarModalDevolverFianza();
+    await reservacionesLoad(true);
+  } catch(e) {
+    dpShowToast('Error: ' + e.message, 'error');
+  } finally {
+    btn.disabled = false; btn.textContent = '↩️ Confirmar devolución';
   }
 };
 
@@ -19148,7 +19297,7 @@ window.finCategoriaPDF = function() {
 
 // IMPORTANTE: APP_VERSION debe coincidir con "version" en version.json y con
 // VERSION en sw.js. Bumpear las 3 juntas o el banner de update queda pegado.
-const APP_VERSION = '20260724-001';
+const APP_VERSION = '20260727-001';
 
 // Referencia al SW en espera (si existe), compartida entre ambas rutas de actualización
 window._pendingSW = null;
@@ -24372,9 +24521,9 @@ body.damas-theme .filter-tab-active { background:rgba(139,74,107,0.15); color:#5
       <div style="font-size:11px;color:#5C6B80;margin-top:8px;">Al guardar se creará el movimiento financiero con el rubro del salón.</div>
     </div>
 
-    <!-- Sub-bloque de FIANZA (informativa, no genera movimiento) -->
+    <!-- Sub-bloque de FIANZA -->
     <div style="background:#F5F0E8;border-radius:12px;padding:14px 16px;margin-bottom:18px;">
-      <div style="font-size:12px;font-weight:700;color:#0D1B2A;letter-spacing:.4px;text-transform:uppercase;margin-bottom:8px;">🛡️ Fianza <span style="font-weight:500;color:#5C6B80;text-transform:none;letter-spacing:0;">(informativa)</span></div>
+      <div style="font-size:12px;font-weight:700;color:#0D1B2A;letter-spacing:.4px;text-transform:uppercase;margin-bottom:8px;">🛡️ Fianza</div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:8px;">
         <div>
           <label class="dp-lbl">Monto de fianza</label>
@@ -24382,15 +24531,20 @@ body.damas-theme .filter-tab-active { background:rgba(139,74,107,0.15); color:#5
             <input id="rsv-reserva-fianza-monto" type="text" inputmode="decimal" class="dp-inp dp-money" placeholder="0.00" style="margin:0;padding-left:26px;">
           </div>
         </div>
-        <div style="display:flex;align-items:flex-end;padding-bottom:8px;">
-          <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:#0D1B2A;cursor:pointer;">
-            <input type="checkbox" id="rsv-reserva-fianza-recibida" style="width:16px;height:16px;cursor:pointer;">
-            Fianza recibida
-          </label>
+        <div>
+          <label class="dp-lbl">Destino del dinero</label>
+          <select id="rsv-reserva-fianza-destino" class="dp-inp" style="margin:0;">
+            <option value="banco">🏦 Banco / transferencia</option>
+            <option value="caja">💵 Efectivo / caja</option>
+          </select>
         </div>
       </div>
+      <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:#0D1B2A;cursor:pointer;margin-bottom:8px;">
+        <input type="checkbox" id="rsv-reserva-fianza-recibida" style="width:16px;height:16px;cursor:pointer;">
+        Fianza recibida
+      </label>
       <input id="rsv-reserva-fianza-nota" class="dp-inp" placeholder="Nota sobre la fianza (opcional)" style="margin:0;">
-      <div style="font-size:10.5px;color:#5C6B80;margin-top:6px;">La fianza NO genera movimiento financiero. Es solo para registro y devolución posterior.</div>
+      <div id="rsv-reserva-fianza-info" style="font-size:10.5px;color:#5C6B80;margin-top:6px;">Al guardar con "Fianza recibida" marcada, se registrará un ingreso en el destino elegido. La devolución (total, parcial o retención por daños) se hace después con el botón "↩️ Devolver fianza" en la lista.</div>
     </div>
 
     <div style="display:flex;gap:10px;justify-content:flex-end;">
@@ -24593,6 +24747,75 @@ body.damas-theme .filter-tab-active { background:rgba(139,74,107,0.15); color:#5
     <div style="display:flex;gap:10px;justify-content:flex-end;">
       <button onclick="rsvCerrarModalPago()" style="padding:10px 22px;background:#F5F0E8;color:#0D1B2A;border:none;border-radius:10px;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;cursor:pointer;">Cancelar</button>
       <button id="rsv-pago-guardar-btn" onclick="rsvGuardarPago()" style="padding:10px 22px;background:linear-gradient(135deg,#1A7A4A,#0D5C35);color:#fff;border:none;border-radius:10px;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;cursor:pointer;">💵 Registrar pago</button>
+    </div>
+  </div>
+</div>
+
+<!-- ════ MODAL: DEVOLVER FIANZA ════ -->
+<div id="rsv-fianza-dev-modal" style="display:none;position:fixed;inset:0;background:rgba(13,27,42,0.7);backdrop-filter:blur(4px);z-index:10000;align-items:center;justify-content:center;padding:24px;overflow-y:auto;" onclick="if(event.target===this)rsvCerrarModalDevolverFianza()">
+  <div style="background:#fff;border-radius:18px;width:100%;max-width:500px;box-shadow:0 24px 80px rgba(13,27,42,0.35);padding:24px 28px;max-height:90vh;overflow-y:auto;">
+    <div style="font-family:'Playfair Display',serif;font-size:20px;font-weight:700;color:#0D1B2A;margin-bottom:4px;">↩️ Devolver fianza</div>
+    <div id="rsv-fianza-dev-evento-lbl" style="font-size:12px;color:#5C6B80;margin-bottom:16px;">Reserva: —</div>
+
+    <input type="hidden" id="rsv-fianza-dev-reserva-id">
+
+    <div id="rsv-fianza-dev-resumen" style="background:#F9F5EF;border-radius:10px;padding:12px 14px;margin-bottom:16px;font-size:13px;color:#3A4A5C;"></div>
+
+    <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:12px;">
+      <label style="display:flex;align-items:flex-start;gap:8px;font-size:13px;color:#0D1B2A;cursor:pointer;padding:8px 10px;border-radius:8px;background:#F9F5EF;border:1.5px solid #EFE6D7;">
+        <input type="radio" name="rsv-fianza-dev-tipo" value="total" onchange="rsvOnFianzaDevTipoChange()" style="margin-top:2px;cursor:pointer;">
+        <div>
+          <div style="font-weight:700;">Devolución total</div>
+          <div style="font-size:11px;color:#5C6B80;margin-top:1px;">No hubo desperfectos. Se devuelve el 100% de la fianza.</div>
+        </div>
+      </label>
+      <label style="display:flex;align-items:flex-start;gap:8px;font-size:13px;color:#0D1B2A;cursor:pointer;padding:8px 10px;border-radius:8px;background:#F9F5EF;border:1.5px solid #EFE6D7;">
+        <input type="radio" name="rsv-fianza-dev-tipo" value="parcial" onchange="rsvOnFianzaDevTipoChange()" style="margin-top:2px;cursor:pointer;">
+        <div>
+          <div style="font-weight:700;">Devolución parcial</div>
+          <div style="font-size:11px;color:#5C6B80;margin-top:1px;">Hubo desperfectos menores. Se retiene una parte y se devuelve el resto.</div>
+        </div>
+      </label>
+      <label style="display:flex;align-items:flex-start;gap:8px;font-size:13px;color:#0D1B2A;cursor:pointer;padding:8px 10px;border-radius:8px;background:#F9F5EF;border:1.5px solid #EFE6D7;">
+        <input type="radio" name="rsv-fianza-dev-tipo" value="retenida" onchange="rsvOnFianzaDevTipoChange()" style="margin-top:2px;cursor:pointer;">
+        <div>
+          <div style="font-weight:700;">Retención total</div>
+          <div style="font-size:11px;color:#5C6B80;margin-top:1px;">Los daños cubren el total de la fianza. No se devuelve nada.</div>
+        </div>
+      </label>
+    </div>
+
+    <div id="rsv-fianza-dev-detalle" style="display:none;background:#F9F5EF;border-radius:8px;padding:10px;margin-bottom:12px;">
+      <div id="rsv-fianza-dev-money-wrap">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
+          <div>
+            <label class="dp-lbl">Monto a devolver</label>
+            <div style="position:relative;"><span style="position:absolute;left:12px;top:50%;transform:translateY(-50%);color:#5C6B80;">$</span>
+              <input id="rsv-fianza-dev-monto" type="text" inputmode="decimal" class="dp-inp dp-money" placeholder="0.00" style="margin:0;padding-left:26px;">
+            </div>
+          </div>
+          <div>
+            <label class="dp-lbl">Fecha de la devolución</label>
+            <input id="rsv-fianza-dev-fecha" type="date" class="dp-inp" style="margin:0;">
+          </div>
+        </div>
+        <label class="dp-lbl">Origen del dinero (de dónde se devuelve)</label>
+        <select id="rsv-fianza-dev-origen" class="dp-inp" style="margin:0 0 10px;">
+          <option value="banco">🏦 Banco / transferencia</option>
+          <option value="caja">💵 Efectivo / caja</option>
+        </select>
+      </div>
+      <div id="rsv-fianza-dev-motivo-wrap" style="display:none;">
+        <label class="dp-lbl">Motivo / desperfectos <span style="color:#C0392B;">*</span></label>
+        <textarea id="rsv-fianza-dev-motivo" class="dp-inp" rows="2" style="resize:vertical;margin:0;" placeholder="Describe los daños que justifican la retención"></textarea>
+      </div>
+    </div>
+
+    <div style="font-size:11px;color:#5C6B80;margin-bottom:14px;">Si hay monto a devolver, se creará un egreso con rubro "Devolución de fianza". El ingreso original de la fianza se mantiene intacto en el libro.</div>
+
+    <div style="display:flex;gap:10px;justify-content:flex-end;">
+      <button onclick="rsvCerrarModalDevolverFianza()" style="padding:10px 22px;background:#F5F0E8;color:#0D1B2A;border:none;border-radius:10px;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;cursor:pointer;">Cancelar</button>
+      <button id="rsv-fianza-dev-confirmar-btn" onclick="rsvConfirmarDevolucionFianza()" style="padding:10px 22px;background:linear-gradient(135deg,#2980B9,#1F618D);color:#fff;border:none;border-radius:10px;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;cursor:pointer;">↩️ Confirmar devolución</button>
     </div>
   </div>
 </div>
