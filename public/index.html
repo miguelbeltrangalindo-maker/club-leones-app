@@ -3427,7 +3427,7 @@ function _renderMisRecibos(recs) {
   const ultBadgeColor = ultEnRevision ? '#2980B9' : pagado ? '#1A7A4A' : ultParcial ? '#8E44AD' : ultCondonado ? '#5C6B80' : '#E67E22';
   const ultBadgeLabel = ultEnRevision ? '🔵 Pendiente de revisión' : pagado ? '✅ Pagado' : ultParcial ? '🟣 Parcial' : ultCondonado ? '🚫 Condonado' : '⏳ Pendiente';
   const conceptos = [
-    {l:'① Cuota mensual',v:ult.c1},{l:'② Internacionales',v:ult.c2},{l:'③ Percápita',v:ult.c3},
+    {l:'① Cuota mensual',v:ult.c1},{l:ult.c2label?('② '+ult.c2label):'② Internacionales',v:ult.c2},{l:'③ Percápita',v:ult.c3},
     {l:'④ Baile de Coronación',v:ult.c4},{l:'⑤ Navidad Escuela Club',v:ult.c5},
     {l:`⑥ Mutualista${ult.c6label?' — '+ult.c6label:''}`,v:ult.c6},
     {l:`⑦ ${ult.c7label||'Concepto extra'}`,v:ult.c7},
@@ -3486,7 +3486,7 @@ window.miReciboVer = async function(id) {
   const tesorero = window._miReciboTesorero;
   const fmt = n => '$' + Number(n||0).toLocaleString('es-MX', {minimumFractionDigits:2});
   const lineas = [
-    ['Cuota Socio',r.c1],['Cuota Dama',r.c2],['Percápita',r.c3],
+    ['Cuota Socio',r.c1],[r.c2label||'Cuota Dama',r.c2],['Percápita',r.c3],
     ['Baile de Coronación',r.c4],['Navidad Escuela Club de Leones',r.c5],
     [r.c6label||'Concepto adicional',r.c6],[r.c7label||'Concepto extra',r.c7]
   ].filter(([,v])=>(v||0)>0);
@@ -3715,7 +3715,7 @@ window.miReciboImprimir = function() {
   const tesorero = window._miReciboTesorero || {nombre:'Tesorero del Club'};
   const fmt = n => '$' + Number(n||0).toLocaleString('es-MX', {minimumFractionDigits:2});
   const lineas = [
-    ['Cuota Socio',r.c1],['Cuota Dama',r.c2],['Percápita',r.c3],
+    ['Cuota Socio',r.c1],[r.c2label||'Cuota Dama',r.c2],['Percápita',r.c3],
     ['Baile de Coronación',r.c4],['Navidad Escuela Club de Leones',r.c5],
     [r.c6label||'Concepto adicional',r.c6],[r.c7label||'Concepto extra',r.c7]
   ].filter(([,v])=>(v||0)>0);
@@ -3765,7 +3765,7 @@ window.miReciboDescargaConfirmar = async function(scope) {
   }
   if (!seleccionados.length) { showToast('No hay recibos en ese rango','error'); return; }
   const htmls = seleccionados.map(r=>{
-    const lineas=[['Cuota Socio',r.c1],['Cuota Dama',r.c2],['Percápita',r.c3],['Baile de Coronación',r.c4],['Navidad Escuela Club de Leones',r.c5],[r.c6label||'Concepto adicional',r.c6],[r.c7label||'Concepto extra',r.c7]].filter(([,v])=>(v||0)>0);
+    const lineas=[['Cuota Socio',r.c1],[r.c2label||'Cuota Dama',r.c2],['Percápita',r.c3],['Baile de Coronación',r.c4],['Navidad Escuela Club de Leones',r.c5],[r.c6label||'Concepto adicional',r.c6],[r.c7label||'Concepto extra',r.c7]].filter(([,v])=>(v||0)>0);
     return rbBuildReciboHTML(r, lineas, fmt, tesorero, false);
   });
   document.getElementById('mi-recibo-dl-modal').style.display='none';
@@ -3844,7 +3844,7 @@ window.dpImprimirSelConfirmar = async function(todos) {
   const tesorero = await rbGetTesorero();
   const fmt = n=>'$'+Number(n||0).toLocaleString('es-MX',{minimumFractionDigits:2,maximumFractionDigits:2});
   const htmls = await Promise.all(sel.map(async r=>{
-    const lineas=[['Cuota Socio',r.c1],['Cuota Dama',r.c2],['Percápita',r.c3],['Baile de Coronación',r.c4],['Navidad Escuela Club de Leones',r.c5],[r.c6label||'Concepto adicional',r.c6],[r.c7label||'Concepto extra',r.c7]].filter(([,v])=>(v||0)>0);
+    const lineas=[['Cuota Socio',r.c1],[r.c2label||'Cuota Dama',r.c2],['Percápita',r.c3],['Baile de Coronación',r.c4],['Navidad Escuela Club de Leones',r.c5],[r.c6label||'Concepto adicional',r.c6],[r.c7label||'Concepto extra',r.c7]].filter(([,v])=>(v||0)>0);
     const historial = await reciboObtenerHistorialPagos(r.id, r.socioUID);
     return rbBuildReciboHTML(r,lineas,fmt,tesorero,false,historial);
   }));
@@ -4083,13 +4083,13 @@ function mutRenderVista(recibos) {
   lista.innerHTML = recibos.map(r => {
     const estadoColor = r.estado === 'pagado' ? '#1A7A4A' : r.estado === 'parcial' ? '#8E44AD' : r.estado === 'condonado' ? '#5C6B80' : '#E67E22';
     const estadoBg = r.estado === 'pagado' ? 'rgba(26,122,74,0.12)' : r.estado === 'parcial' ? 'rgba(142,68,173,0.12)' : r.estado === 'condonado' ? 'rgba(138,155,176,0.14)' : 'rgba(230,126,34,0.12)';
-    const fallecido = (r.c6label && r.c6label !== 'Concepto adicional') ? r.c6label : null;
+    const fallecido = (!r.c6TipoInscripcion && r.c6label && r.c6label !== 'Concepto adicional') ? r.c6label : null;
     return `<div style="background:var(--white);border-radius:14px;padding:16px;margin-bottom:10px;box-shadow:0 2px 10px rgba(13,27,42,0.06);">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
         <div style="font-family:'Playfair Display',serif;font-size:18px;font-weight:700;color:var(--navy);">${r.mes} ${r.anio}</div>
         <span style="padding:5px 14px;border-radius:50px;font-size:13px;font-weight:700;background:${estadoBg};color:${estadoColor};">${r.estado === 'pagado' ? '✅ Cobrado' : r.estado === 'parcial' ? '🟣 Parcial' : r.estado === 'condonado' ? '🚫 Condonado' : '⏳ Pendiente'}</span>
       </div>
-      ${fallecido ? `
+      ${r.c6TipoInscripcion ? `<div style="font-size:14px;color:#5C6B80;margin-bottom:8px;">🆕 ${r.c6label || 'Inscripción a Mutualidad'}</div>` : fallecido ? `
         <div style="background:rgba(13,27,42,0.04);border-radius:10px;padding:10px 14px;margin-bottom:8px;display:flex;align-items:center;gap:8px;">
           <span style="font-size:16px;">⚫</span>
           <div>
@@ -9371,7 +9371,7 @@ window.dpBuscarCuotasConcepto = function() {
       if (idxHasta != null && periodIdx > idxHasta) return;
 
       const candidatos = [
-        ...DP_CONCEPTO_FIJOS.map(c => ({ label: c.label, monto: Number(r[c.key] || 0) })),
+        ...DP_CONCEPTO_FIJOS.map(c => ({ label: c.key === 'c2' ? (r.c2label || c.label) : c.label, monto: Number(r[c.key] || 0) })),
         { label: r.c6label || 'Mutualista', monto: Number(r.c6 || 0) },
         { label: r.c7label || 'Concepto extra', monto: Number(r.c7 || 0) },
       ];
@@ -11138,8 +11138,9 @@ window.cuotasLoad = async function() {
       document.getElementById('cq-c5').value=t.c5||''; document.getElementById('cq-c6').value=t.c6||'';
       document.getElementById('cq-c6-label').value=t.c6label||''; document.getElementById('cq-c7').value=t.c7||'';
       document.getElementById('cq-c7-label').value=t.c7label||'';
+      document.getElementById('cq-inscripcionclub').value=t.inscripcionClub||''; document.getElementById('cq-lions').value=t.lionsInternational||'';
     } else {
-      ['cq-c1','cq-c2','cq-c3','cq-c4','cq-c5','cq-c6','cq-c7'].forEach(id => { const el=document.getElementById(id); if(el) el.value=''; });
+      ['cq-c1','cq-c2','cq-c3','cq-c4','cq-c5','cq-c6','cq-c7','cq-inscripcionclub','cq-lions'].forEach(id => { const el=document.getElementById(id); if(el) el.value=''; });
       ['cq-c6-label','cq-c7-label'].forEach(id => { const el=document.getElementById(id); if(el) el.value=''; });
     }
   } catch(e) { console.error(e); }
@@ -11154,6 +11155,7 @@ window.cuotasSave = async function() {
   const data = {
     anio: parseInt(anio), c1:g('cq-c1'), c2:g('cq-c2'), c3:g('cq-c3'), c4:g('cq-c4'), c5:g('cq-c5'), c6:g('cq-c6'),
     c6label:s('cq-c6-label')||'', c7:g('cq-c7'), c7label:s('cq-c7-label')||'',
+    inscripcionClub:g('cq-inscripcionclub'), lionsInternational:g('cq-lions'),
     actualizadoPor:(window.currentUser?.nombre||'')+' '+(window.currentUser?.apellido||''), actualizado:new Date().toISOString(),
   };
   try {
@@ -11179,6 +11181,7 @@ async function cuotasLoadHistorial() {
         <th class="dp-th" style="text-align:right;">C. Dama</th><th class="dp-th" style="text-align:right;">Percáp.</th>
         <th class="dp-th" style="text-align:right;">Baile</th><th class="dp-th" style="text-align:right;">Navidad</th>
         <th class="dp-th">Mutualista</th><th class="dp-th">Concepto 7</th>
+        <th class="dp-th" style="text-align:right;">Insc. Club</th><th class="dp-th" style="text-align:right;">Insc. Lions</th>
         <th class="dp-th" style="text-align:center;">Acción</th>
       </tr></thead>
       <tbody>${rows.map(t=>`<tr style="border-bottom:1px solid #F5F0E8;">
@@ -11190,6 +11193,8 @@ async function cuotasLoadHistorial() {
         <td style="padding:10px 14px;text-align:right;font-size:12px;">$${(t.c5||0).toLocaleString('es-MX',{minimumFractionDigits:2})}</td>
         <td style="padding:10px 14px;font-size:12px;color:#555;">${t.c6label?`<span style="color:#C0392B;">⚫ ${t.c6label}</span><br>`:''}<strong>$${(t.c6||0).toLocaleString('es-MX',{minimumFractionDigits:2})}</strong></td>
         <td style="padding:10px 14px;font-size:12px;color:#555;">${t.c7label||'—'}: <strong>$${(t.c7||0).toLocaleString('es-MX',{minimumFractionDigits:2})}</strong></td>
+        <td style="padding:10px 14px;text-align:right;font-size:12px;">$${(t.inscripcionClub||0).toLocaleString('es-MX',{minimumFractionDigits:2})}</td>
+        <td style="padding:10px 14px;text-align:right;font-size:12px;">$${(t.lionsInternational||0).toLocaleString('es-MX',{minimumFractionDigits:2})}</td>
         <td style="padding:10px 14px;text-align:center;"><button onclick="cuotasCargarAnio(${t.anio})" style="padding:4px 10px;background:rgba(201,151,58,0.12);color:#C9973A;border:none;border-radius:7px;font-size:11px;font-weight:600;cursor:pointer;">Editar</button></td>
       </tr>`).join('')}</tbody></table>`;
   } catch(e) { cont.innerHTML='<div style="color:#C0392B;">Error al cargar historial</div>'; }
@@ -11932,7 +11937,7 @@ window.estImprimirPendientesSocio=async function(){
   const tesorero=await rbGetTesorero();
   const fmt=(n)=>'$'+(n||0).toLocaleString('es-MX',{minimumFractionDigits:2,maximumFractionDigits:2});
   const htmls=recibos.map(r=>{
-    const lineas=[['Cuota Socio',r.c1],['Cuota Dama',r.c2],['Percápita',r.c3],['Baile de Coronación',r.c4],['Navidad Escuela Club de Leones',r.c5],[r.c6label||'Mutualista',r.c6],[r.c7label||'Concepto extra',r.c7]].filter(([,v])=>(v||0)>0);
+    const lineas=[['Cuota Socio',r.c1],[r.c2label||'Cuota Dama',r.c2],['Percápita',r.c3],['Baile de Coronación',r.c4],['Navidad Escuela Club de Leones',r.c5],[r.c6label||'Mutualista',r.c6],[r.c7label||'Concepto extra',r.c7]].filter(([,v])=>(v||0)>0);
     return rbBuildReciboHTML(r,lineas,fmt,tesorero,false);
   });
   rbAbrirVentanaImpresion(htmls,`Recibos Pendientes — ${nomSocio}`,'');
@@ -12557,7 +12562,7 @@ window.rbImprimirSocio = async function() {
   const tesorero=await rbGetTesorero();
   const fmt=(n)=>'$'+(n||0).toLocaleString('es-MX',{minimumFractionDigits:2,maximumFractionDigits:2});
   const htmls=aImprimir.map(r=>{
-    const lineas=[['Cuota Socio',r.c1],['Cuota Dama',r.c2],['Percápita',r.c3],['Baile de Coronación',r.c4],['Navidad Escuela Club de Leones',r.c5],[r.c6label||'Mutualista',r.c6],[r.c7label||'Concepto extra',r.c7]].filter(([,v])=>(v||0)>0);
+    const lineas=[['Cuota Socio',r.c1],[r.c2label||'Cuota Dama',r.c2],['Percápita',r.c3],['Baile de Coronación',r.c4],['Navidad Escuela Club de Leones',r.c5],[r.c6label||'Mutualista',r.c6],[r.c7label||'Concepto extra',r.c7]].filter(([,v])=>(v||0)>0);
     return rbBuildReciboHTML(r,lineas,fmt,tesorero,false);
   });
   rbAbrirVentanaImpresion(htmls,`Recibos de ${nomSocio} — ${labelEstado}`,'');
@@ -12640,6 +12645,138 @@ window.rbUpdateEstadoStyle = function() {
   if(gLbl)gLbl.style.borderColor=!isPend?'#1A7A4A':'#E8E0D4';
   if(pDot)pDot.style.display=isPend?'block':'none';
   if(gDot)gDot.style.display=!isPend?'block':'none';
+}
+
+// ══ RECIBO DE SOCIO NUEVO (ALTA) — junta en un solo recibo las cuotas de
+// ingreso: Inscripción al Club (c2), Inscripción Lions International (c7),
+// Coronación (c4), Mensualidad (c1), Percápita (c3) e Inscripción a
+// Mutualidad (c6, marcado con c6TipoInscripcion para que la vista del rol
+// Mutualista no lo confunda con una cuota por fallecimiento de un socio). ══
+window.rbAltaAbrir = function() {
+  ['rb-alta-nombre','rb-alta-apellido','rb-alta-numero'].forEach(id => { document.getElementById(id).value = ''; });
+  const now = new Date();
+  const meses = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+  document.getElementById('rb-alta-mes').value = meses[now.getMonth()];
+  document.getElementById('rb-alta-anio').value = now.getFullYear();
+  ['rb-alta-club','rb-alta-lions','rb-alta-coronacion','rb-alta-percapita','rb-alta-mensualidad','rb-alta-mutualidad'].forEach(id => { const el=document.getElementById(id); if(el) el.value=''; });
+  document.getElementById('rb-alta-notas').value = '';
+  document.getElementById('rb-alta-estado-pagado').checked = true;
+  rbAltaUpdateEstadoStyle();
+  rbAltaCambioAnio();
+  document.getElementById('rb-modal-alta').style.display = 'flex';
+  setTimeout(() => document.getElementById('rb-alta-nombre')?.focus(), 50);
+}
+
+window.rbAltaActualizarLabels = function() {
+  const mes = document.getElementById('rb-alta-mes')?.value || '';
+  const lbl = document.getElementById('rb-alta-mensualidad-lbl');
+  if (lbl) lbl.textContent = mes ? `Mensualidad de ${mes}` : 'Mensualidad';
+}
+
+window.rbAltaCambioAnio = function() {
+  const anio = document.getElementById('rb-alta-anio')?.value || new Date().getFullYear();
+  cuotasGetTarifas(anio).then(t => {
+    if (!t) return;
+    if (t.c1) document.getElementById('rb-alta-mensualidad').value = _moneyFmt(t.c1);
+    if (t.c3) document.getElementById('rb-alta-percapita').value = _moneyFmt(t.c3);
+    if (t.c4) document.getElementById('rb-alta-coronacion').value = _moneyFmt(t.c4);
+    if (t.c6) document.getElementById('rb-alta-mutualidad').value = _moneyFmt(t.c6);
+    if (t.inscripcionClub) document.getElementById('rb-alta-club').value = _moneyFmt(t.inscripcionClub);
+    if (t.lionsInternational) document.getElementById('rb-alta-lions').value = _moneyFmt(t.lionsInternational);
+    rbAltaCalcTotal();
+  });
+  rbAltaActualizarLabels();
+}
+
+window.rbAltaCalcTotal = function() {
+  const total = ['rb-alta-club','rb-alta-lions','rb-alta-coronacion','rb-alta-percapita','rb-alta-mensualidad','rb-alta-mutualidad']
+    .reduce((s,id) => s + moneyVal(id), 0);
+  document.getElementById('rb-alta-total-display').textContent = '$' + total.toLocaleString('es-MX', {minimumFractionDigits:2, maximumFractionDigits:2});
+}
+
+window.rbAltaUpdateEstadoStyle = function() {
+  const isPend = document.getElementById('rb-alta-estado-pendiente')?.checked;
+  const pLbl=document.getElementById('rb-alta-estado-pendiente-lbl');
+  const gLbl=document.getElementById('rb-alta-estado-pagado-lbl');
+  const pDot=document.getElementById('rb-alta-dot-pendiente');
+  const gDot=document.getElementById('rb-alta-dot-pagado');
+  if(pLbl)pLbl.style.borderColor=isPend?'#E67E22':'#E8E0D4';
+  if(gLbl)gLbl.style.borderColor=!isPend?'#1A7A4A':'#E8E0D4';
+  if(pDot)pDot.style.display=isPend?'block':'none';
+  if(gDot)gDot.style.display=!isPend?'block':'none';
+}
+
+window.rbAltaCerrar = function() { document.getElementById('rb-modal-alta').style.display = 'none'; }
+
+window.rbGuardarAlta = async function() {
+  const nombre = (document.getElementById('rb-alta-nombre').value||'').trim();
+  const apellido = (document.getElementById('rb-alta-apellido').value||'').trim();
+  const numeroSocio = (document.getElementById('rb-alta-numero').value||'').trim();
+  const mes = document.getElementById('rb-alta-mes').value;
+  const anio = parseInt(document.getElementById('rb-alta-anio').value) || 0;
+  if (!nombre || !apellido) { dpShowToast('Captura nombre y apellidos del socio','error'); return; }
+  if (!numeroSocio) { dpShowToast('Captura el número de socio','error'); return; }
+  if (!mes || !anio) { dpShowToast('Indica el mes y año de ingreso','error'); return; }
+
+  const yaExiste = (window.allMembers||[]).find(m => m.estado !== 'baja' && String(m.numeroSocio||'').trim() === numeroSocio);
+  if (yaExiste) {
+    const ok = confirm(`⚠️ El número de socio ${numeroSocio} ya está asignado a ${(yaExiste.nombre||'')+' '+(yaExiste.apellido||'')}.\n\n¿Deseas continuar de todas formas?`);
+    if (!ok) return;
+  }
+
+  const c = moneyVal;
+  const club = c('rb-alta-club'), lions = c('rb-alta-lions'), coronacion = c('rb-alta-coronacion'),
+        percapita = c('rb-alta-percapita'), mensualidad = c('rb-alta-mensualidad'), mutualidad = c('rb-alta-mutualidad');
+  const total = mensualidad + club + coronacion + percapita + mutualidad + lions;
+  if (total <= 0) { dpShowToast('Captura al menos un concepto con monto mayor a cero','error'); return; }
+
+  try {
+    // El socio aún no tiene cuenta en el sistema: se crea como "socio offline"
+    // (mismo mecanismo que Panel Admin → Socios Offline). Cuando la persona se
+    // registre con su propia cuenta, consolidarCuentaOffline() le transferirá
+    // este recibo automáticamente — así no queda huérfano ni duplicado.
+    const meses = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+    const mesNum = String(meses.indexOf(mes) + 1).padStart(2,'0');
+    const newUid = 'offline_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+    const socioData = {
+      nombre, apellido, numeroSocio, tipo: 'socio',
+      correo: '', whatsapp: '', fechaIngreso: `${anio}-${mesNum}-01`, conyuge: '', fechaNacimiento: '',
+      offline: true, rol: 'miembro', activo: true,
+      nombreCompleto: nombre + ' ' + apellido,
+      creadoEn: new Date().toISOString(),
+      creadoPor: window.currentUser?.uid,
+    };
+    await setDoc(doc(db, 'usuarios', newUid), { ...socioData, uid: newUid });
+    await setDoc(doc(db, 'roles', newUid), { rol: 'miembro', activo: true, uid: newUid });
+    await logAuditoria('crear_socio_offline', { uid: newUid, nombre, apellido, origen: 'recibo_alta' });
+
+    const data = {
+      socioUID: newUid, nombreSocio: nombre + ' ' + apellido, apellidoSocio: apellido, numeroSocio, subtipo: 'socio', mes, anio,
+      c1: mensualidad,
+      c2: club, c2label: 'Inscripción al Club',
+      c3: percapita,
+      c4: coronacion,
+      c5: 0,
+      c6: mutualidad, c6label: 'Inscripción a Mutualidad', c6TipoInscripcion: true,
+      c7: lions, c7label: 'Inscripción Lions International',
+      descuento: 0, descuentoLabel: '',
+      notas: (document.getElementById('rb-alta-notas').value||'').trim(),
+      total,
+      estado: document.querySelector('input[name="rb-alta-estado"]:checked')?.value || 'pagado',
+      esAltaSocio: true,
+      autorUID: window.currentUser?.uid||'',
+      autorNombre: (window.currentUser?.nombre||'')+' '+(window.currentUser?.apellido||''),
+      creado: new Date().toISOString(),
+    };
+    data.tesoreroNombre = (await rbGetTesorero()).nombre;
+    const ref = await addDoc(collection(db,'recibos'), data);
+    await logAuditoria('crear_recibo_alta_socio', { id: ref.id, socio: data.nombreSocio, mes, anio, total });
+    invalidateCollectionCache('recibos');
+    await dpRefreshMembers();
+    dpShowToast('Socio y recibo de alta creados ✅','success');
+    rbAltaCerrar();
+    await rbLoad();
+  } catch(e) { dpShowToast('Error: '+e.message,'error'); }
 }
 
 window.rbGuardar = async function() {
@@ -12815,7 +12952,7 @@ window.rbVer = async function(id) {
   const r=ud.data();
   const tesorero=await rbGetTesorero();
   const fmt=(n)=>'$'+(n||0).toLocaleString('es-MX',{minimumFractionDigits:2,maximumFractionDigits:2});
-  const lineas=[['Cuota Socio',r.c1],['Cuota Dama',r.c2],['Percápita',r.c3],['Baile de Coronación',r.c4],['Navidad Escuela Club de Leones',r.c5],[r.c6label||'Concepto adicional',r.c6],[r.c7label||'Concepto extra',r.c7]].filter(([,v])=>(v||0)>0);
+  const lineas=[['Cuota Socio',r.c1],[r.c2label||'Cuota Dama',r.c2],['Percápita',r.c3],['Baile de Coronación',r.c4],['Navidad Escuela Club de Leones',r.c5],[r.c6label||'Concepto adicional',r.c6],[r.c7label||'Concepto extra',r.c7]].filter(([,v])=>(v||0)>0);
   const historial = await reciboObtenerHistorialPagos(id, r.socioUID);
   document.getElementById('rb-ver-body').innerHTML=`<div id="rb-print-area" data-id="${id}">${rbBuildReciboHTML(r,lineas,fmt,tesorero,true,historial)}</div>`;
   document.getElementById('rb-modal-ver').style.display='flex';
@@ -12899,7 +13036,7 @@ window.rbImprimir = async function() {
   const r=ud.data();
   const tesorero=await rbGetTesorero();
   const fmt=(n)=>'$'+(n||0).toLocaleString('es-MX',{minimumFractionDigits:2,maximumFractionDigits:2});
-  const lineas=[['Cuota Socio',r.c1],['Cuota Dama',r.c2],['Percápita',r.c3],['Baile de Coronación',r.c4],['Navidad Escuela Club de Leones',r.c5],[r.c6label||'Concepto adicional',r.c6],[r.c7label||'Concepto extra',r.c7]].filter(([,v])=>(v||0)>0);
+  const lineas=[['Cuota Socio',r.c1],[r.c2label||'Cuota Dama',r.c2],['Percápita',r.c3],['Baile de Coronación',r.c4],['Navidad Escuela Club de Leones',r.c5],[r.c6label||'Concepto adicional',r.c6],[r.c7label||'Concepto extra',r.c7]].filter(([,v])=>(v||0)>0);
   const historial = await reciboObtenerHistorialPagos(id, r.socioUID);
   rbAbrirVentanaImpresion([rbBuildReciboHTML(r,lineas,fmt,tesorero,false,historial)]);
 }
@@ -12914,7 +13051,7 @@ window.rbImprimirLote = async function() {
   const tesorero=await rbGetTesorero();
   const fmt=(n)=>'$'+(n||0).toLocaleString('es-MX',{minimumFractionDigits:2,maximumFractionDigits:2});
   const htmls=aImprimir.map(r=>{
-    const lineas=[['Cuota Socio',r.c1],['Cuota Dama',r.c2],['Percápita',r.c3],['Baile de Coronación',r.c4],['Navidad Escuela Club de Leones',r.c5],[r.c6label||'Concepto adicional',r.c6],[r.c7label||'Concepto extra',r.c7]].filter(([,v])=>(v||0)>0);
+    const lineas=[['Cuota Socio',r.c1],[r.c2label||'Cuota Dama',r.c2],['Percápita',r.c3],['Baile de Coronación',r.c4],['Navidad Escuela Club de Leones',r.c5],[r.c6label||'Concepto adicional',r.c6],[r.c7label||'Concepto extra',r.c7]].filter(([,v])=>(v||0)>0);
     return rbBuildReciboHTML(r,lineas,fmt,tesorero,false);
   });
   rbAbrirVentanaImpresion(htmls,mesFiltro,anioFiltro);
@@ -19297,7 +19434,7 @@ window.finCategoriaPDF = function() {
 
 // IMPORTANTE: APP_VERSION debe coincidir con "version" en version.json y con
 // VERSION en sw.js. Bumpear las 3 juntas o el banner de update queda pegado.
-const APP_VERSION = '20260727-001';
+const APP_VERSION = '20260803-001';
 
 // Referencia al SW en espera (si existe), compartida entre ambas rutas de actualización
 window._pendingSW = null;
@@ -21910,6 +22047,11 @@ body.damas-theme .filter-tab-active { background:rgba(139,74,107,0.15); color:#5
           <div class="dp-card" style="border:1.5px solid #E74C3C22;"><div class="dp-card-hdr"><span class="dp-card-ttl" style="color:#C0392B;">⑥ Mutualista</span></div><div style="padding:16px 20px;"><label class="dp-lbl">Monto por fallecimiento</label><div style="position:relative;margin-bottom:10px;"><span style="position:absolute;left:12px;top:50%;transform:translateY(-50%);color:#5C6B80;">$</span><input id="cq-c6" class="dp-inp dp-money" type="text" inputmode="decimal" placeholder="0.00" style="padding-left:26px;font-size:16px;font-weight:600;"></div><label class="dp-lbl">Nombre del socio fallecido</label><input id="cq-c6-label" class="dp-inp" placeholder="Nombre del socio fallecido (aparecerá en el recibo)"></div></div>
           <div class="dp-card" style="border:1.5px dashed #E8E0D4;"><div class="dp-card-hdr"><span class="dp-card-ttl" style="color:#555;">⑦ Concepto extra</span></div><div style="padding:16px 20px;"><label class="dp-lbl">Nombre del concepto</label><input id="cq-c7-label" class="dp-inp" placeholder="Ej: Fondo especial" style="margin-bottom:10px;"><label class="dp-lbl">Monto base</label><div style="position:relative;"><span style="position:absolute;left:12px;top:50%;transform:translateY(-50%);color:#5C6B80;">$</span><input id="cq-c7" class="dp-inp dp-money" type="text" inputmode="decimal" placeholder="0.00" style="padding-left:26px;font-size:16px;font-weight:600;"></div></div></div>
         </div>
+        <div style="font-size:10px;font-weight:700;color:#5C6B80;letter-spacing:1px;text-transform:uppercase;margin-bottom:12px;">🆕 Cuotas de Socio Nuevo (recibo de alta)</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:20px;">
+          <div class="dp-card"><div class="dp-card-hdr"><span class="dp-card-ttl" style="color:#C9973A;">Inscripción al Club</span></div><div style="padding:16px 20px;"><label class="dp-lbl">Monto único</label><div style="position:relative;"><span style="position:absolute;left:12px;top:50%;transform:translateY(-50%);color:#5C6B80;">$</span><input id="cq-inscripcionclub" class="dp-inp dp-money" type="text" inputmode="decimal" placeholder="0.00" style="padding-left:26px;font-size:16px;font-weight:600;"></div></div></div>
+          <div class="dp-card"><div class="dp-card-hdr"><span class="dp-card-ttl" style="color:#C9973A;">Inscripción Lions International</span></div><div style="padding:16px 20px;"><label class="dp-lbl">Monto único</label><div style="position:relative;"><span style="position:absolute;left:12px;top:50%;transform:translateY(-50%);color:#5C6B80;">$</span><input id="cq-lions" class="dp-inp dp-money" type="text" inputmode="decimal" placeholder="0.00" style="padding-left:26px;font-size:16px;font-weight:600;"></div></div></div>
+        </div>
         <div class="dp-card"><div class="dp-card-hdr"><span class="dp-card-ttl">📋 Historial de Tarifas Guardadas</span></div><div id="cuotas-historial" style="padding:16px 20px;"><div style="text-align:center;padding:20px;color:#5C6B80;">Cargando historial...</div></div></div>
       </div>
 
@@ -22966,6 +23108,7 @@ body.damas-theme .filter-tab-active { background:rgba(139,74,107,0.15); color:#5
             <button onclick="rbImprimirLote()" style="padding:9px 18px;background:#fff;color:#0D1B2A;border:2px solid #E8E0D4;border-radius:10px;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;cursor:pointer;">🖨 Imprimir Lista</button>
             <button onclick="rbOpenLote()" style="padding:9px 18px;background:#fff;color:#0D1B2A;border:2px solid #E8E0D4;border-radius:10px;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;cursor:pointer;">📋 Recibos en Lote</button>
             <button onclick="rbAdelantadoAbrir()" style="padding:9px 18px;background:#0D1B2A;color:#E8B84B;border:none;border-radius:10px;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;cursor:pointer;">🧾 Cuotas del semestre / año</button>
+            <button onclick="rbAltaAbrir()" style="padding:9px 18px;background:#fff;color:#8E44AD;border:2px solid #8E44AD;border-radius:10px;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;cursor:pointer;">🆕 Recibo de Socio Nuevo</button>
             <button onclick="rbOpenNuevo()" style="padding:9px 18px;background:linear-gradient(135deg,#E8B84B,#C9973A);color:#0D1B2A;border:none;border-radius:10px;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;cursor:pointer;">➕ Nuevo Recibo</button>
           </div>
         </div>
@@ -23547,6 +23690,60 @@ body.damas-theme .filter-tab-active { background:rgba(139,74,107,0.15); color:#5
       <div style="display:flex;gap:10px;">
         <button onclick="rbCloseModal()" style="padding:12px 20px;background:#F5F0E8;color:#0D1B2A;border:none;border-radius:12px;font-family:'DM Sans',sans-serif;font-size:14px;font-weight:600;cursor:pointer;">Cancelar</button>
         <button onclick="rbGuardar()" style="flex:1;padding:12px;background:linear-gradient(135deg,#E8B84B,#C9973A);color:#0D1B2A;border:none;border-radius:12px;font-family:'DM Sans',sans-serif;font-size:15px;font-weight:700;cursor:pointer;">Guardar Recibo →</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- MODAL: RECIBO DE SOCIO NUEVO (ALTA) -->
+<div id="rb-modal-alta" style="display:none;position:fixed;inset:0;background:rgba(13,27,42,0.65);backdrop-filter:blur(4px);z-index:9200;align-items:flex-start;justify-content:center;padding:24px;overflow-y:auto;" onclick="if(event.target===this)rbAltaCerrar()">
+  <div style="background:#fff;border-radius:20px;width:100%;max-width:680px;margin:auto;box-shadow:0 24px 80px rgba(13,27,42,0.3);">
+    <div style="padding:20px 28px;border-bottom:1px solid #F0EBE0;display:flex;align-items:center;justify-content:space-between;">
+      <div><div style="font-family:'Playfair Display',serif;font-size:18px;font-weight:700;color:#0D1B2A;">🆕 Recibo de Socio Nuevo</div><div style="font-size:12px;color:#5C6B80;margin-top:2px;">Junta en un solo recibo las cuotas de ingreso al Club</div></div>
+      <button onclick="rbAltaCerrar()" style="width:32px;height:32px;background:#F5F0E8;border:none;border-radius:9px;cursor:pointer;font-size:15px;">✕</button>
+    </div>
+    <div style="padding:24px 28px;">
+      <div style="font-size:11px;color:#5C6B80;background:#F9F5EF;border-radius:9px;padding:8px 12px;margin-bottom:14px;">🆕 Este socio aún no tiene cuenta en el sistema — al guardar se crea automáticamente su registro (podrá vincularlo a una cuenta real más adelante).</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px;margin-bottom:14px;">
+        <div><label class="dp-lbl">Nombre(s) *</label><input id="rb-alta-nombre" class="dp-inp" placeholder="Nombre"></div>
+        <div><label class="dp-lbl">Apellidos *</label><input id="rb-alta-apellido" class="dp-inp" placeholder="Apellidos"></div>
+        <div><label class="dp-lbl">Número de Socio *</label><input id="rb-alta-numero" class="dp-inp" placeholder="Ej: 215"></div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:20px;">
+        <div><label class="dp-lbl">Mes de ingreso *</label><select id="rb-alta-mes" class="dp-inp" onchange="rbAltaActualizarLabels()"><option value="Enero">Enero</option><option value="Febrero">Febrero</option><option value="Marzo">Marzo</option><option value="Abril">Abril</option><option value="Mayo">Mayo</option><option value="Junio">Junio</option><option value="Julio">Julio</option><option value="Agosto">Agosto</option><option value="Septiembre">Septiembre</option><option value="Octubre">Octubre</option><option value="Noviembre">Noviembre</option><option value="Diciembre">Diciembre</option></select></div>
+        <div><label class="dp-lbl">Año *</label><input id="rb-alta-anio" class="dp-inp" type="number" min="2020" max="2099" onchange="rbAltaCambioAnio()"></div>
+      </div>
+      <div style="font-size:10px;font-weight:700;color:#5C6B80;letter-spacing:1px;text-transform:uppercase;margin-bottom:14px;padding-bottom:8px;border-bottom:1px solid #F0EBE0;">Conceptos del recibo de alta</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:16px;">
+        <div style="background:#F9F5EF;border-radius:12px;padding:14px;"><label class="dp-lbl" style="color:#C9973A;">Inscripción al Club</label><div style="position:relative;"><span style="position:absolute;left:12px;top:50%;transform:translateY(-50%);color:#5C6B80;font-size:14px;">$</span><input id="rb-alta-club" class="dp-inp dp-money" type="text" inputmode="decimal" placeholder="0.00" style="padding-left:26px;" oninput="rbAltaCalcTotal()"></div></div>
+        <div style="background:#F9F5EF;border-radius:12px;padding:14px;"><label class="dp-lbl" style="color:#C9973A;">Inscripción Lions International</label><div style="position:relative;"><span style="position:absolute;left:12px;top:50%;transform:translateY(-50%);color:#5C6B80;font-size:14px;">$</span><input id="rb-alta-lions" class="dp-inp dp-money" type="text" inputmode="decimal" placeholder="0.00" style="padding-left:26px;" oninput="rbAltaCalcTotal()"></div></div>
+        <div style="background:#F9F5EF;border-radius:12px;padding:14px;"><label class="dp-lbl" style="color:#E67E22;">Coronación</label><div style="position:relative;"><span style="position:absolute;left:12px;top:50%;transform:translateY(-50%);color:#5C6B80;font-size:14px;">$</span><input id="rb-alta-coronacion" class="dp-inp dp-money" type="text" inputmode="decimal" placeholder="0.00" style="padding-left:26px;" oninput="rbAltaCalcTotal()"></div></div>
+        <div style="background:#F9F5EF;border-radius:12px;padding:14px;"><label class="dp-lbl" style="color:#2980B9;">Cuota Percápita</label><div style="position:relative;"><span style="position:absolute;left:12px;top:50%;transform:translateY(-50%);color:#5C6B80;font-size:14px;">$</span><input id="rb-alta-percapita" class="dp-inp dp-money" type="text" inputmode="decimal" placeholder="0.00" style="padding-left:26px;" oninput="rbAltaCalcTotal()"></div></div>
+        <div style="background:#F9F5EF;border-radius:12px;padding:14px;"><label class="dp-lbl" style="color:#1A7A4A;" id="rb-alta-mensualidad-lbl">Mensualidad</label><div style="position:relative;"><span style="position:absolute;left:12px;top:50%;transform:translateY(-50%);color:#5C6B80;font-size:14px;">$</span><input id="rb-alta-mensualidad" class="dp-inp dp-money" type="text" inputmode="decimal" placeholder="0.00" style="padding-left:26px;" oninput="rbAltaCalcTotal()"></div></div>
+        <div style="background:#FEF0EE;border-radius:12px;padding:14px;border:1px solid rgba(192,57,43,0.15);"><label class="dp-lbl" style="color:#C0392B;">Inscripción a Mutualidad</label><div style="position:relative;"><span style="position:absolute;left:12px;top:50%;transform:translateY(-50%);color:#5C6B80;font-size:14px;">$</span><input id="rb-alta-mutualidad" class="dp-inp dp-money" type="text" inputmode="decimal" placeholder="0.00" style="padding-left:26px;" oninput="rbAltaCalcTotal()"></div></div>
+      </div>
+      <div style="margin-bottom:20px;"><label class="dp-lbl">Notas</label><textarea id="rb-alta-notas" class="dp-inp" placeholder="Observaciones opcionales..." rows="2" style="resize:vertical;min-height:60px;"></textarea></div>
+      <div style="background:linear-gradient(135deg,#0D1B2A,#1A2E42);border-radius:14px;padding:16px 20px;margin-bottom:20px;display:flex;align-items:center;justify-content:space-between;">
+        <div style="color:rgba(255,255,255,0.6);font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:1px;">Total del Recibo</div>
+        <div id="rb-alta-total-display" style="font-family:'Playfair Display',serif;font-size:28px;font-weight:900;color:#E8B84B;">$0.00</div>
+      </div>
+      <div style="margin-bottom:20px;"><label class="dp-lbl">Estado del pago</label>
+        <div style="display:flex;gap:10px;">
+          <label style="flex:1;display:flex;align-items:center;gap:10px;padding:12px 16px;border:2px solid #E8E0D4;border-radius:10px;cursor:pointer;" id="rb-alta-estado-pendiente-lbl">
+            <input type="radio" name="rb-alta-estado" value="pendiente" id="rb-alta-estado-pendiente" onchange="rbAltaUpdateEstadoStyle()" style="display:none;">
+            <div style="width:16px;height:16px;border-radius:50%;border:2px solid #E8E0D4;display:flex;align-items:center;justify-content:center;"><div style="width:8px;height:8px;border-radius:50%;background:#E67E22;display:none;" id="rb-alta-dot-pendiente"></div></div>
+            <span style="font-size:13px;font-weight:600;color:#E67E22;">⏳ Pendiente</span>
+          </label>
+          <label style="flex:1;display:flex;align-items:center;gap:10px;padding:12px 16px;border:2px solid #E8E0D4;border-radius:10px;cursor:pointer;" id="rb-alta-estado-pagado-lbl">
+            <input type="radio" name="rb-alta-estado" value="pagado" id="rb-alta-estado-pagado" checked onchange="rbAltaUpdateEstadoStyle()" style="display:none;">
+            <div style="width:16px;height:16px;border-radius:50%;border:2px solid #E8E0D4;display:flex;align-items:center;justify-content:center;"><div style="width:8px;height:8px;border-radius:50%;background:#1A7A4A;display:none;" id="rb-alta-dot-pagado"></div></div>
+            <span style="font-size:13px;font-weight:600;color:#1A7A4A;">✅ Pagado</span>
+          </label>
+        </div>
+      </div>
+      <div style="display:flex;gap:10px;">
+        <button onclick="rbAltaCerrar()" style="padding:12px 20px;background:#F5F0E8;color:#0D1B2A;border:none;border-radius:12px;font-family:'DM Sans',sans-serif;font-size:14px;font-weight:600;cursor:pointer;">Cancelar</button>
+        <button onclick="rbGuardarAlta()" style="flex:1;padding:12px;background:linear-gradient(135deg,#8E44AD,#6C3483);color:#fff;border:none;border-radius:12px;font-family:'DM Sans',sans-serif;font-size:15px;font-weight:700;cursor:pointer;">Guardar Recibo de Alta →</button>
       </div>
     </div>
   </div>

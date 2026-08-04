@@ -154,6 +154,21 @@ service cloud.firestore {
       let d = request.resource.data;
       return (!d.keys().hasAny(['rol']) || d.rol == 'pendiente');
     }
+    // Tesorero: puede crear el perfil de un "socio offline" (alta rápida al cobrar
+    // su recibo de ingreso, antes de que tenga cuenta propia) pero SOLO con rol
+    // 'miembro' y tipo 'socio' — nunca admin/subadmin/tesorero, para que no pueda
+    // autoescalarse ni crear otros privilegiados con un uid arbitrario.
+    function validTesoreroCrearSocioOffline() {
+      let d = request.resource.data;
+      return d.get('offline', false) == true
+          && d.get('tipo', '') == 'socio'
+          && noHtml(d, 'nombre') && noHtml(d, 'apellido')
+          && d.nombre is string && d.nombre.size() <= 80 && d.nombre.size() > 0
+          && d.apellido is string && d.apellido.size() <= 80 && d.apellido.size() > 0;
+    }
+    function validTesoreroCrearRoleMiembro() {
+      return request.resource.data.get('rol', '') == 'miembro';
+    }
     // Subadmin: no puede tocar admins ni promover a admin, y tiene una lista
     // de campos privilegiados que sólo admin puede modificar.
     // Campos bloqueados: correo (sync con Auth requiere Cloud Function),
@@ -375,7 +390,9 @@ service cloud.firestore {
       allow list: if isApprovedMember();
       // Self-register: el usuario sólo puede crear su propio doc con rol='pendiente'.
       // Admin/subadmin puede crear cualquier perfil (alta de socios offline, etc.)
-      allow create: if (isSelf(userId) && validSelfRegisterUsuario()) || isAdminOrSub();
+      // Tesorero puede crear un socio offline acotado (recibo de alta de socio nuevo).
+      allow create: if (isSelf(userId) && validSelfRegisterUsuario()) || isAdminOrSub()
+                    || (isTesorero() && validTesoreroCrearSocioOffline());
       // Subadmin no puede promover a admin ni modificar admins existentes.
       allow update: if isAdmin()
                     || (isSubadmin() && validSubadminUpdateUsuario())
@@ -386,7 +403,9 @@ service cloud.firestore {
     match /roles/{userId} {
       allow read: if isApprovedMember();
       // Self-create del role-doc sólo se acepta con rol='pendiente'.
-      allow create: if (isSelf(userId) && validSelfRegisterRole()) || isAdminOrSub();
+      // Tesorero puede crear el role-doc de un socio offline, pero SOLO con rol='miembro'.
+      allow create: if (isSelf(userId) && validSelfRegisterRole()) || isAdminOrSub()
+                    || (isTesorero() && validTesoreroCrearRoleMiembro());
       // Subadmin no puede promover a admin ni modificar admins.
       allow update: if isAdmin() || (isSubadmin() && validSubadminUpdateRole());
       allow delete: if isAdmin();
