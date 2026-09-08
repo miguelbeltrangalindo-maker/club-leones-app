@@ -1,5 +1,6 @@
 {
   "projects": {
-    "default": "app-club-de-leones"
+    "default": "app-club-de-leones",
+    "demo": "club-leones-demo"
   }
 }

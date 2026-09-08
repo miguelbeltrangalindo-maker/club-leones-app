@@ -545,7 +545,7 @@ exports.notificarNuevoRegistro = onDocumentCreated(
 exports.recordarJuntasAsambleas = onSchedule(
   { schedule: '0 8 * * *', timeZone: 'America/Mexico_City' },
   async () => {
-    const APP_URL = 'https://app-club-de-leones.web.app';
+    const APP_URL = process.env.APP_URL || 'https://app-club-de-leones.web.app';
     const now = new Date();
 
     // Skip eventos pasados antes del trabajo pesado (transacción + notify).
@@ -649,7 +649,7 @@ async function getTokensByTipos(tipos) {
 exports.notificarEstacionamiento = onSchedule(
   { schedule: '0 9 * * *', timeZone: 'America/Mexico_City' },
   async () => {
-    const APP_URL = 'https://app-club-de-leones.web.app';
+    const APP_URL = process.env.APP_URL || 'https://app-club-de-leones.web.app';
     const now = new Date();
     const today = now.toISOString().slice(0, 10);
 
@@ -712,7 +712,7 @@ exports.notificarEstacionamiento = onSchedule(
 //  CORREO ELECTRÓNICO — Helpers
 // ══════════════════════════════════════════════════════════════════════════════
 
-const APP_URL_EMAIL = 'https://app-club-de-leones.web.app';
+const APP_URL_EMAIL = process.env.APP_URL || 'https://app-club-de-leones.web.app';
 const LOGO_URL = 'https://res.cloudinary.com/dgfkkwypy/image/upload/v1773701524/Logo_leones_veracruz_yfyhgg.png';
 
 function crearTransporter(user, pass) {
