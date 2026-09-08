@@ -2123,8 +2123,10 @@ window.fondoReservaLoad = async function() {
     const hoy = new Date().toISOString().slice(0, 10);
     const depFecha = document.getElementById('dp-fr-dep-fecha');
     const retFecha = document.getElementById('dp-fr-ret-fecha');
+    const mutFecha = document.getElementById('dp-fr-mut-fecha');
     if (depFecha && !depFecha.value) depFecha.value = hoy;
     if (retFecha && !retFecha.value) retFecha.value = hoy;
+    if (mutFecha && !mutFecha.value) mutFecha.value = hoy;
   } catch(e) {
     showToast('Error al cargar Fondo de Reserva: ' + e.message, 'error');
     console.error('fondoReservaLoad ERROR:', e);
@@ -2183,11 +2185,13 @@ function frRenderRetiros(rets) {
     const fecha = new Date(r.fecha || Date.now()).toLocaleDateString('es-MX', { day: '2-digit', month: 'long', year: 'numeric' });
     const editBtn = canEdit ? `<button data-id="${esc(r.id)}" onclick="frAbrirEdicion(this.dataset.id)" style="padding:5px 10px;background:#F5F0E8;color:#0D1B2A;border:none;border-radius:7px;font-size:11px;font-weight:600;cursor:pointer;flex-shrink:0;">✏️</button>` : '';
     const delBtn  = canDelete ? `<button data-id="${esc(r.id)}" onclick="frEliminarMovimiento(this.dataset.id)" style="padding:5px 10px;background:rgba(192,57,43,0.08);color:#C0392B;border:none;border-radius:7px;font-size:11px;font-weight:600;cursor:pointer;flex-shrink:0;">🗑️</button>` : '';
+    const esPagoMut = r.destinoTipo === 'mutualista_directo';
     return `<div style="display:flex;align-items:center;gap:12px;padding:14px 16px;border-bottom:1px solid #F5F0E8;">
-      <div style="width:40px;height:40px;border-radius:10px;background:rgba(192,57,43,0.1);display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0;">💸</div>
+      <div style="width:40px;height:40px;border-radius:10px;background:${esPagoMut?'rgba(142,68,173,0.1)':'rgba(192,57,43,0.1)'};display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0;">${esPagoMut?'⚫':'💸'}</div>
       <div style="flex:1;min-width:0;">
         <div style="font-size:13px;font-weight:600;color:#0D1B2A;">${esc(r.concepto) || 'Retiro'}</div>
         <div style="font-size:11px;color:#5C6B80;">${fecha} · Autorizado por: ${esc(r.autorizadoPor) || '—'}</div>
+        ${esPagoMut ? '<div style="font-size:10px;color:#8E44AD;font-weight:700;">⚫ Pago directo a la Mutualista</div>' : ''}
         ${r.notas ? `<div style="font-size:11px;color:#5C6B80;margin-top:2px;">${esc(r.notas)}</div>` : ''}
       </div>
       <div style="font-family:'Playfair Display',serif;font-size:15px;font-weight:700;color:#C0392B;flex-shrink:0;">-${fmt(r.monto)}</div>
@@ -2323,6 +2327,82 @@ window.frRegistrarRetiro = async function() {
   finally { if (btn) { btn.disabled = false; btn.textContent = '💸 Aplicar retiro'; } }
 };
 
+// Pago directo del Fondo de Reserva a la Mutualista: no pasa por Banco/Caja
+// (son dos fondos internos separados). Afecta ambos saldos en un solo movimiento:
+// resta del Fondo de Reserva (retiro) y abona a la deuda con la Mutualista.
+window.frPagarMutualista = async function() {
+  if (!canManageFinance()) { showToast('Solo admin, subadmin o tesorero pueden hacer este pago','error'); return; }
+  const btn = document.getElementById('dp-fr-mut-btn');
+  const monto = moneyVal('dp-fr-mut-monto');
+  const concepto = document.getElementById('dp-fr-mut-concepto')?.value.trim();
+  const fecha = document.getElementById('dp-fr-mut-fecha')?.value || new Date().toISOString().slice(0,10);
+  const notas = document.getElementById('dp-fr-mut-notas')?.value.trim();
+  const autorizadoPor = document.getElementById('dp-fr-mut-autorizado')?.value.trim();
+
+  if (!monto || monto <= 0) { showToast('Ingresa un monto válido', 'error'); return; }
+  if (!concepto) { showToast('El concepto es obligatorio', 'error'); return; }
+
+  if (!confirm(`⚫ Pagar ${'$'+monto.toLocaleString('es-MX',{minimumFractionDigits:2})} a la Mutualista con dinero del Fondo de Reserva\n\nEsto restará el monto del saldo del Fondo de Reserva y lo abonará a la deuda con la Mutualista. No se registra movimiento de Banco/Caja.\n\n¿Continuar?`)) return;
+
+  if (btn) { btn.disabled = true; btn.textContent = 'Procesando...'; }
+  try {
+    // Re-leer saldo FRESCO del Fondo de Reserva para evitar saldo negativo por movimientos concurrentes.
+    const snapFresh = await getDocs(collection(db, 'fondo_reserva'));
+    let totalDep = 0, totalRet = 0;
+    snapFresh.forEach(d => {
+      const data = d.data();
+      const m = Number(data.monto || 0);
+      if (data.tipo === 'deposito' || data.tipo === 'saldo_inicial') totalDep += m;
+      else if (data.tipo === 'retiro') totalRet += m;
+    });
+    const saldoDisp = totalDep - totalRet;
+    if (monto > saldoDisp) {
+      showToast(`Saldo insuficiente en el Fondo de Reserva. Disponible: $${saldoDisp.toLocaleString('es-MX', { minimumFractionDigits: 2 })}. Recarga la vista.`, 'error');
+      await fondoReservaLoad();
+      return;
+    }
+
+    const autorNombreActual = ((window.currentUser?.nombre||'') + ' ' + (window.currentUser?.apellido||'')).trim();
+
+    const frRef = await addDoc(collection(db, 'fondo_reserva'), {
+      tipo: 'retiro',
+      monto,
+      concepto: `Pago directo a Fondo Mutualista — ${concepto}`,
+      fecha,
+      notas,
+      autorizadoPor,
+      destinoTipo: 'mutualista_directo',
+      autorUID: window.currentUser.uid,
+      autorNombre: autorNombreActual,
+      creadoEn: new Date().toISOString(),
+    });
+
+    const mutRef = await addDoc(collection(db, 'mutualista_pagos'), {
+      monto,
+      concepto: `Pago directo desde Fondo de Reserva — ${concepto}`,
+      fecha: new Date(fecha + 'T12:00:00').toISOString(),
+      soloRegistro: true,
+      origenFondoReserva: true,
+      fondoReservaMovId: frRef.id,
+      creadoEn: new Date().toISOString(),
+      autorUID: window.currentUser?.uid || '',
+      autorNombre: autorNombreActual,
+    });
+
+    await updateDoc(doc(db,'fondo_reserva', frRef.id), { mutualistaPagoId: mutRef.id });
+
+    await logAuditoria('fondo_reserva_pago_mutualista', { monto, concepto, fecha, autorizadoPor, fondoReservaMovId: frRef.id, mutualistaPagoId: mutRef.id }, { severidad: 'importante' });
+    showToast('✅ Pago directo a la Mutualista registrado — ambos saldos actualizados', 'success');
+    document.getElementById('dp-fr-mut-monto').value = '';
+    document.getElementById('dp-fr-mut-concepto').value = '';
+    document.getElementById('dp-fr-mut-notas').value = '';
+    document.getElementById('dp-fr-mut-autorizado').value = '';
+    await fondoReservaLoad();
+    if (typeof dpMutualistaLoad === 'function') await dpMutualistaLoad();
+  } catch(e) { showToast('Error: ' + e.message, 'error'); }
+  finally { if (btn) { btn.disabled = false; btn.textContent = '⚫ Pagar a la Mutualista'; } }
+};
+
 // ── Editar movimiento existente del Fondo de Reserva ─────────────
 window.frAbrirEdicion = function(id) {
   if (!isAdminOrSub()) return;
@@ -2393,16 +2473,21 @@ window.frEliminarMovimiento = function(id) {
   if (!m) return;
   const fmt = n => '$' + Number(n || 0).toLocaleString('es-MX', { minimumFractionDigits: 2 });
   const tipo = m.tipo === 'retiro' ? 'retiro' : 'depósito';
+  const esPagoMut = m.destinoTipo === 'mutualista_directo' && m.mutualistaPagoId;
   pedirNota(
     `Eliminar ${tipo} — Fondo de Reserva`,
-    `"${m.concepto || tipo}" · ${fmt(m.monto)}`,
+    `"${m.concepto || tipo}" · ${fmt(m.monto)}${esPagoMut ? ' · ⚠️ También se revertirá el pago vinculado en la Mutualista' : ''}`,
     async (nota) => {
       try {
         await deleteDoc(doc(db, 'fondo_reserva', id));
-        await logAuditoria('fondo_reserva_eliminacion', { id, tipo: m.tipo, monto: m.monto, concepto: m.concepto, nota },
+        if (esPagoMut) {
+          await deleteDoc(doc(db, 'mutualista_pagos', m.mutualistaPagoId)).catch(() => null);
+        }
+        await logAuditoria('fondo_reserva_eliminacion', { id, tipo: m.tipo, monto: m.monto, concepto: m.concepto, nota, mutualistaPagoId: esPagoMut ? m.mutualistaPagoId : null },
           { severidad: 'importante' });
-        showToast('Movimiento eliminado', 'info');
+        showToast(esPagoMut ? 'Retiro y pago vinculado eliminados' : 'Movimiento eliminado', 'info');
         await fondoReservaLoad();
+        if (esPagoMut && typeof dpMutualistaLoad === 'function') await dpMutualistaLoad();
       } catch(e) { showToast('Error al eliminar: ' + e.message, 'error'); }
     }
   );
@@ -2501,7 +2586,7 @@ async function loadBotanas() {
       collection(db, 'botanas'),
       where('fecha', '>=', Timestamp.fromDate(today)),
       orderBy('fecha', 'asc'),
-      limit(20)
+      limit(100)
     );
     const snap = await getDocs(q);
     _botanasList = snap.docs.map(d => ({ id: d.id, ...d.data() }));
@@ -6383,6 +6468,7 @@ async function dpRefreshMembers() {
   window.allMembers = [];
   userSnap.forEach(d => {
     const userData = d.data();
+    if (userData.migrado === true) return; // doc offline ya consolidado en otra cuenta, no mostrar
     const roleData = rolesMap.get(d.id) || {};
     window.allMembers.push({
       uid: d.id,
@@ -6395,7 +6481,7 @@ async function dpRefreshMembers() {
 
   window.allMembers.sort((a,b) => ((a.apellido||'') + ' ' + (a.nombre||'')).localeCompare(((b.apellido||'') + ' ' + (b.nombre||'')), 'es', {sensitivity:'base'}));
   dpRenderStats();
-  dpRenderTable((window.allMembers||[]).filter(x => x.migrado !== true && (document.getElementById('dp-show-bajas')?.checked || x.estado !== 'baja')));
+  dpRenderTable((window.allMembers||[]).filter(x => document.getElementById('dp-show-bajas')?.checked || x.estado !== 'baja'));
 }
 
 async function dpRefreshPendingBadge() {
@@ -10878,12 +10964,12 @@ function dpMutualistaPagosRender(pagos) {
   cont.innerHTML = pagosOrden.map(p => {
     const fecha = new Date(p.fecha||Date.now()).toLocaleDateString('es-MX',{day:'2-digit',month:'long',year:'numeric'});
     const isPdf = p.comprobanteNombre?.toLowerCase().endsWith('.pdf');
-    const badgeHist = p.soloRegistro ? '<span style="margin-left:6px;padding:2px 7px;border-radius:50px;font-size:9.5px;font-weight:700;background:rgba(155,89,182,0.12);color:#7C3AAD;letter-spacing:.3px;">📋 HISTÓRICO</span>' : '';
+    const badgeHist = p.origenFondoReserva ? '<span style="margin-left:6px;padding:2px 7px;border-radius:50px;font-size:9.5px;font-weight:700;background:rgba(142,68,173,0.12);color:#8E44AD;letter-spacing:.3px;">⚫ FONDO DE RESERVA</span>' : (p.soloRegistro ? '<span style="margin-left:6px;padding:2px 7px;border-radius:50px;font-size:9.5px;font-weight:700;background:rgba(155,89,182,0.12);color:#7C3AAD;letter-spacing:.3px;">📋 HISTÓRICO</span>' : '');
     return `<div style="display:flex;align-items:center;gap:12px;padding:14px 0;border-bottom:1px solid #F5F0E8;">
       <div style="width:40px;height:40px;border-radius:10px;background:rgba(41,128,185,0.1);display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0;">${isPdf?'📄':'🖼️'}</div>
       <div style="flex:1;min-width:0;">
         <div style="font-size:13px;font-weight:600;color:#0D1B2A;">${p.concepto||'Pago a Mutualista'}${badgeHist}</div>
-        <div style="font-size:11px;color:#5C6B80;">${fecha} · ${p.autorNombre||''}${p.soloRegistro?' · <i>solo registro, no afecta finanzas</i>':''}</div>
+        <div style="font-size:11px;color:#5C6B80;">${fecha} · ${p.autorNombre||''}${p.origenFondoReserva?' · <i>pagado con el Fondo de Reserva, no Banco/Caja</i>':(p.soloRegistro?' · <i>solo registro, no afecta finanzas</i>':'')}</div>
         ${p.comprobanteURL ? `<a href="${esc(safeUrl(p.comprobanteURL))}" target="_blank" rel="noopener" style="font-size:10px;color:#C9973A;text-decoration:none;font-weight:600;">Ver comprobante →</a>` : '<div style="font-size:10px;color:#C0C8D8;">Sin comprobante</div>'}
       </div>
       <div style="text-align:right;flex-shrink:0;">
@@ -10934,16 +11020,22 @@ window.dpMutGuardarEdicion = async function() {
 
 window.dpMutEliminarPago = function(id, concepto, monto) {
   const fmt = n => '$'+(n||0).toLocaleString('es-MX',{minimumFractionDigits:2});
+  const pago = (window._dpMutPagos||[]).find(p => p.id === id);
+  const esFondoReserva = pago?.origenFondoReserva && pago?.fondoReservaMovId;
   pedirNota(
     'Eliminar pago — Mutualista',
-    `"${concepto}" · ${fmt(monto)}`,
+    `"${concepto}" · ${fmt(monto)}${esFondoReserva ? ' · ⚠️ También se revertirá el retiro vinculado en el Fondo de Reserva' : ''}`,
     async (nota) => {
       try {
         await deleteDoc(doc(db,'mutualista_pagos',id));
-        await logAuditoria('eliminar_pago_mutualista', { id, concepto, monto, nota },
+        if (esFondoReserva) {
+          await deleteDoc(doc(db,'fondo_reserva', pago.fondoReservaMovId)).catch(() => null);
+        }
+        await logAuditoria('eliminar_pago_mutualista', { id, concepto, monto, nota, fondoReservaMovId: esFondoReserva ? pago.fondoReservaMovId : null },
           { severidad: 'importante' });
-        dpShowToast('Pago eliminado','error');
+        dpShowToast(esFondoReserva ? 'Pago y retiro vinculado eliminados' : 'Pago eliminado','error');
         await dpMutualistaLoad();
+        if (typeof fondoReservaLoad === 'function') await fondoReservaLoad();
       } catch(e) { dpShowToast('Error: '+e.message,'error'); }
     }
   );
@@ -14880,9 +14972,10 @@ window.rsvRender = function() {
     const cancelada = r.estado === 'cancelada';
     const opacityStyle = cancelada ? 'opacity:.55;' : '';
 
-    // El botón "Pagar" solo aparece en reservas YA confirmadas con saldo pendiente.
+    // El botón "Pagar" aparece en confirmadas y también en realizadas (evento ya pasó) con saldo pendiente,
+    // para poder cobrar extras contratados el día del evento o liquidar después por temas administrativos.
     // Las tentativas pasan por el modal de edición (cambiar estado a Confirmada → exige pago).
-    const btnPago = (r.estado === 'confirmada' && saldo > 0)
+    const btnPago = ((r.estado === 'confirmada' || r.estado === 'realizada') && saldo > 0)
       ? `<button onclick="rsvAbrirModalPago('${esc(r.id)}')" style="padding:6px 12px;background:rgba(26,122,74,0.1);color:#1A7A4A;border:none;border-radius:7px;font-size:11.5px;font-weight:700;cursor:pointer;">💵 Pagar saldo</button>` : '';
     const btnCancelar = (r.estado !== 'cancelada' && r.estado !== 'realizada')
       ? `<button onclick="rsvCancelarReserva('${esc(r.id)}')" style="padding:6px 12px;background:rgba(192,57,43,0.08);color:#C0392B;border:none;border-radius:7px;font-size:11.5px;font-weight:700;cursor:pointer;">🚫 Cancelar</button>` : '';
@@ -14932,7 +15025,7 @@ function rsvRenderKPIs() {
   const tentativas = lista.filter(r => r.estado === 'tentativa');
   const totalCobrado = lista.filter(r => r.estado !== 'cancelada')
     .reduce((s,r) => s + Number(r.anticipo||0) + Number(r.saldoPagado||0), 0);
-  const totalSaldoPendiente = lista.filter(r => r.estado !== 'cancelada' && r.estado !== 'realizada')
+  const totalSaldoPendiente = lista.filter(r => r.estado !== 'cancelada')
     .reduce((s,r) => {
       const total = rsvTotalReserva(r);
       const pagado = Number(r.anticipo||0) + Number(r.saldoPagado||0);
@@ -19434,7 +19527,7 @@ window.finCategoriaPDF = function() {
 
 // IMPORTANTE: APP_VERSION debe coincidir con "version" en version.json y con
 // VERSION en sw.js. Bumpear las 3 juntas o el banner de update queda pegado.
-const APP_VERSION = '20260803-001';
+const APP_VERSION = '20260908-001';
 
 // Referencia al SW en espera (si existe), compartida entre ambas rutas de actualización
 window._pendingSW = null;
@@ -22507,6 +22600,31 @@ body.damas-theme .filter-tab-active { background:rgba(139,74,107,0.15); color:#5
                 <input type="hidden" id="dp-fr-ret-metodo" value="transferencia">
               </div>
               <button id="dp-fr-ret-btn" onclick="frRegistrarRetiro()" style="padding:12px 28px;background:linear-gradient(135deg,#C0392B,#922B21);color:#fff;border:none;border-radius:10px;font-family:'DM Sans',sans-serif;font-size:14px;font-weight:700;cursor:pointer;">💸 Aplicar retiro</button>
+            </div>
+          </div>
+
+          <!-- Pago directo a la Mutualista -->
+          <div class="dp-card" style="margin-top:24px;">
+            <div class="dp-card-hdr"><span class="dp-card-ttl">⚫ Pago Directo a la Mutualista</span></div>
+            <div style="padding:20px 24px;">
+              <div style="font-size:12.5px;color:#5C6B80;margin-bottom:16px;background:#F5F0E8;border-radius:8px;padding:10px 14px;">
+                Salda deuda con el Fondo Mutualista usando dinero del Fondo de Reserva directamente. No pasa por Banco/Caja: se descuenta el saldo del Fondo de Reserva <b>y</b> se abona a la deuda con la Mutualista en un solo movimiento.
+              </div>
+              <div style="display:grid;grid-template-columns:1fr 2fr;gap:14px;margin-bottom:14px;">
+                <div><label class="dp-lbl">Monto a pagar *</label>
+                  <div style="position:relative;"><span style="position:absolute;left:12px;top:50%;transform:translateY(-50%);color:#5C6B80;">$</span>
+                  <input id="dp-fr-mut-monto" class="dp-inp dp-money" type="text" inputmode="decimal" placeholder="0.00" style="padding-left:26px;font-size:16px;font-weight:600;"></div>
+                </div>
+                <div><label class="dp-lbl">Concepto *</label>
+                  <input id="dp-fr-mut-concepto" class="dp-inp" placeholder="Ej: Abono a deuda mutualista — Marzo 2026"></div>
+              </div>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px;">
+                <div><label class="dp-lbl">Fecha</label><input id="dp-fr-mut-fecha" class="dp-inp" type="date"></div>
+                <div><label class="dp-lbl">Autorizado por</label><input id="dp-fr-mut-autorizado" class="dp-inp" placeholder="Nombre del autorizante"></div>
+              </div>
+              <div style="margin-bottom:16px;"><label class="dp-lbl">Notas</label>
+                <textarea id="dp-fr-mut-notas" class="dp-inp" rows="2" style="resize:vertical;" placeholder="Información adicional..."></textarea></div>
+              <button id="dp-fr-mut-btn" onclick="frPagarMutualista()" style="padding:12px 28px;background:linear-gradient(135deg,#8E44AD,#6C3483);color:#fff;border:none;border-radius:10px;font-family:'DM Sans',sans-serif;font-size:14px;font-weight:700;cursor:pointer;">⚫ Pagar a la Mutualista</button>
             </div>
           </div>
         </div>
