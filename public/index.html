@@ -6133,9 +6133,10 @@ function votRenderDetalle() {
     if (abierta) {
       const esRunoff = Array.isArray(v.votantesPermitidos);
       const puedeVotar = !esRunoff || v.votantesPermitidos.includes(window.currentUser.uid);
-      const cerrar = votEsLider()
+      const cerrarBtn = votEsLider()
         ? `<button onclick="votCerrarVotacion('${v.id}')" style="width:100%;margin-top:16px;background:linear-gradient(135deg,#0D1B2A,#1A2E42);color:#E8B84B;border:none;border-radius:12px;padding:14px;font-family:'DM Sans',sans-serif;font-size:14px;font-weight:800;cursor:pointer;">🔒 Cerrar elección y publicar resultado</button>`
         : '';
+      const cerrar = cerrarBtn + votBtnEliminarHTML(v.id);
       const avisoRunoff = esRunoff ? `<div style="text-align:center;font-size:11.5px;color:#8A6D2F;background:rgba(201,151,58,0.1);border-radius:8px;padding:8px;margin-bottom:10px;">🔁 Segunda vuelta · solo votan quienes participaron en la primera</div>` : '';
       if (!puedeVotar) {
         cont.innerHTML = headEl + avisoRunoff + '<div style="text-align:center;padding:24px;color:#5C6B80;font-size:13px;">No participaste en la primera vuelta, por lo que esta segunda vuelta no está habilitada para tu voto.</div>' + cerrar;
@@ -6156,7 +6157,7 @@ function votRenderDetalle() {
       cont.innerHTML = headEl + avisoRunoff + `<div style="display:flex;flex-direction:column;gap:10px;">${btns}</div>` + nota + cerrar;
     } else {
       const r = v.resultado;
-      if (!r) { cont.innerHTML = headEl + '<div style="text-align:center;padding:24px;color:#5C6B80;">Calculando resultado…</div>'; return; }
+      if (!r) { cont.innerHTML = headEl + '<div style="text-align:center;padding:24px;color:#5C6B80;">Calculando resultado…</div>' + votBtnEliminarHTML(v.id); return; }
       const tot = r.total || 0;
       const pct = n => tot ? Math.round(n/tot*100) : 0;
       const filas = (v.candidatos||[]).map(cand => ({ cand, n: (r.conteo && r.conteo[cand.uid]) || 0 }))
@@ -6177,7 +6178,7 @@ function votRenderDetalle() {
       const segunda = (votEsLider() && r.empate)
         ? `<button onclick="votSegundaVuelta('${v.id}')" style="width:100%;margin-top:8px;background:linear-gradient(135deg,#0D1B2A,#1A2E42);color:#E8B84B;border:none;border-radius:12px;padding:13px;font-family:'DM Sans',sans-serif;font-size:13.5px;font-weight:800;cursor:pointer;">🔁 Crear segunda vuelta</button>`
         : '';
-      cont.innerHTML = headEl + veredicto + filas + `<div style="text-align:center;font-size:12px;color:#5C6B80;margin-top:2px;">${tot} voto${tot!==1?'s':''} en total</div>` + segunda;
+      cont.innerHTML = headEl + veredicto + filas + `<div style="text-align:center;font-size:12px;color:#5C6B80;margin-top:2px;">${tot} voto${tot!==1?'s':''} en total</div>` + segunda + votBtnEliminarHTML(v.id);
     }
     return;
   }
@@ -6216,7 +6217,7 @@ function votRenderDetalle() {
     const accion = abierta
       ? `<button onclick="votCerrarVotacion('${v.id}')" style="width:100%;margin-top:16px;background:linear-gradient(135deg,#0D1B2A,#1A2E42);color:#E8B84B;border:none;border-radius:12px;padding:14px;font-family:'DM Sans',sans-serif;font-size:14px;font-weight:800;cursor:pointer;">🔒 Cerrar votación y enviar resultado</button>`
       : `<div style="text-align:center;margin-top:14px;padding:10px;background:#FBF8F2;border-radius:10px;font-size:13px;color:#5A6B80;">Votación cerrada. El resultado se envió a los ${tot} participantes.</div>`;
-    cont.innerHTML = head + votaje + stats + bar + nominal + accion;
+    cont.innerHTML = head + votaje + stats + bar + nominal + accion + votBtnEliminarHTML(v.id);
     return;
   }
 
@@ -6264,6 +6265,28 @@ window.votCerrarVotacion = async function(id) {
     showToast('Votación cerrada', 'success');
   } catch(e) { console.error('votCerrarVotacion', e); showToast('No se pudo cerrar: ' + (e.message||e), 'error'); }
 };
+
+// Eliminar votación/elección (solo líderes, igual que firestore.rules). Los votos de la
+// subcolección los limpia la CF limpiarVotosVotacionBorrada (el cliente no puede leer
+// los votos secretos de una elección).
+window.votEliminarVotacion = async function(id, desdeWeb) {
+  if (!votEsLider()) { showToast('No tienes permiso', 'error'); return; }
+  const v = (_votDetData && _votDetData.id === id) ? _votDetData : (_votCache.find(x => x.id === id) || (window._dpVotwebCache||{})[id] || {});
+  const nombre = v.tipo === 'eleccion' ? `la elección de ${v.cargo||''} ${v.periodo||''}`.trim() : `la votación "${v.titulo||''}"`;
+  if (!confirm(`¿Eliminar ${nombre}?\n\nSe borrarán también todos sus votos y resultados. Esta acción NO se puede deshacer.`)) return;
+  try {
+    await deleteDoc(doc(db,'votaciones',id));
+    logAuditoria('eliminar_votacion', { votacionId: id, titulo: v.titulo||'', tipo: v.tipo||'votacion', estado: v.estado||'', resultado: v.resultado||null }, { severidad: 'importante', modulo: 'votaciones' });
+    if (_votDetId === id) votCerrarDetalle();
+    showToast('Votación eliminada', 'success');
+    if (desdeWeb) dpVotacionesWebLoad(true);
+  } catch(e) { console.error('votEliminarVotacion', e); showToast('No se pudo eliminar: ' + (e.message||e), 'error'); }
+};
+function votBtnEliminarHTML(id) {
+  return votEsLider()
+    ? `<button onclick="votEliminarVotacion('${id}')" style="width:100%;margin-top:10px;background:none;color:#C0392B;border:1.5px solid rgba(192,57,43,0.35);border-radius:12px;padding:12px;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;cursor:pointer;">🗑️ Eliminar votación</button>`
+    : '';
+}
 
 // ── Panel de administración ──
 async function galeriaRenderAdmin(){
@@ -10096,6 +10119,7 @@ window.dpVotacionesWebLoad = async function(force) {
   try {
     const snap = await getDocs(query(collection(db,'votaciones'), orderBy('createdAt','desc'), limit(100)));
     const vots = []; snap.forEach(d => vots.push({ id:d.id, ...d.data() }));
+    window._dpVotwebCache = {}; vots.forEach(v => { window._dpVotwebCache[v.id] = v; });
     if (!vots.length) { wrap.innerHTML = '<div style="text-align:center;padding:50px;color:#5C6B80;">Aún no hay votaciones registradas.</div>'; return; }
     // Votaciones: conteo en vivo desde votos si aún abierta. Elecciones: secretas,
     // solo se muestran los totales guardados por la CF al cerrar.
@@ -10112,6 +10136,7 @@ window.dpVotacionesWebLoad = async function(force) {
       return { v, r, esEleccion:false };
     }));
     const fmtFecha = ts => ts?.seconds ? new Date(ts.seconds*1000).toLocaleDateString('es-MX',{day:'2-digit',month:'short',year:'numeric'}) : '—';
+    const btnDel = id => votEsLider() ? `<button onclick="votEliminarVotacion('${id}',true)" title="Eliminar" style="padding:4px 10px;background:none;border:1px solid rgba(192,57,43,0.35);color:#C0392B;border-radius:8px;font-family:'DM Sans',sans-serif;font-size:11.5px;font-weight:700;cursor:pointer;">🗑️ Eliminar</button>` : '';
     wrap.innerHTML = filas.map(({v,r,esEleccion}) => {
       const abierta = v.estado === 'abierta';
       if (esEleccion) {
@@ -10133,7 +10158,7 @@ window.dpVotacionesWebLoad = async function(force) {
         return `<div class="dp-card" style="margin-bottom:14px;padding:18px 20px;border-left:4px solid #0E7490;">
           <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:4px;">
             <div style="font-family:'Playfair Display',serif;font-size:17px;font-weight:700;color:#0D1B2A;">🗳️ ${esc(v.cargo||'Elección')}</div>
-            <span class="vot-badge ${abierta?'abierta':'cerrada'}">${abierta?'En curso':'Cerrada'}</span>
+            <div style="display:flex;gap:8px;align-items:center;flex-shrink:0;"><span class="vot-badge ${abierta?'abierta':'cerrada'}">${abierta?'En curso':'Cerrada'}</span>${btnDel(v.id)}</div>
           </div>
           <div style="font-size:12px;color:#5C6B80;margin-bottom:14px;">Periodo ${esc(v.periodo||'')} · ${fmtFecha(v.createdAt)}${verd?' · '+verd:''}${!abierta&&tot?` · ${tot} votos`:''}</div>
           ${cuerpo}
@@ -10149,7 +10174,7 @@ window.dpVotacionesWebLoad = async function(force) {
       return `<div class="dp-card" style="margin-bottom:14px;padding:18px 20px;">
         <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:4px;">
           <div style="font-family:'Playfair Display',serif;font-size:17px;font-weight:700;color:#0D1B2A;">${esc(v.titulo||'—')}</div>
-          <span class="vot-badge ${abierta?'abierta':'cerrada'}">${abierta?'En curso':'Cerrada'}</span>
+          <div style="display:flex;gap:8px;align-items:center;flex-shrink:0;"><span class="vot-badge ${abierta?'abierta':'cerrada'}">${abierta?'En curso':'Cerrada'}</span>${btnDel(v.id)}</div>
         </div>
         <div style="font-size:12px;color:#5C6B80;margin-bottom:14px;">${aud} · ${fmtFecha(v.createdAt)} · ${abierta?'conteo parcial':verdicto}</div>
         <div style="display:flex;gap:10px;text-align:center;">
@@ -19527,7 +19552,7 @@ window.finCategoriaPDF = function() {
 
 // IMPORTANTE: APP_VERSION debe coincidir con "version" en version.json y con
 // VERSION en sw.js. Bumpear las 3 juntas o el banner de update queda pegado.
-const APP_VERSION = '20260908-001';
+const APP_VERSION = '20261008-001';
 
 // Referencia al SW en espera (si existe), compartida entre ambas rutas de actualización
 window._pendingSW = null;

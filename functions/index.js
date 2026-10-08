@@ -1129,6 +1129,23 @@ exports.limpiarPdfActaBorrada = onDocumentDeleted(
   }
 );
 
+// ── TRIGGER 13: limpiar los votos de una votación borrada ─────────────────────
+// El cliente (líder) solo borra el doc padre; no puede leer los votos secretos de
+// una elección ni borrar votos ajenos. Aquí, con Admin SDK, se elimina la
+// subcolección votos/ para no dejar documentos huérfanos.
+exports.limpiarVotosVotacionBorrada = onDocumentDeleted(
+  'votaciones/{vid}',
+  async (event) => {
+    const vid = event.params.vid;
+    try {
+      await db.recursiveDelete(db.collection('votaciones').doc(vid).collection('votos'));
+      console.log(`🗑️ Votos de votación ${vid} eliminados`);
+    } catch (e) {
+      console.error('limpiarVotosVotacionBorrada ERROR:', e.message);
+    }
+  }
+);
+
 // ── CALLABLE: buscar socios offline para el picker de registro ────────────────
 // Antes el cliente leía /usuarios where offline==true directamente, lo que exponía
 // PII (correo, whatsapp, cónyuge, fecha de nacimiento) a cualquier autenticado.
