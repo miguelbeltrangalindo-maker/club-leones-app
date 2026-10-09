@@ -10,8 +10,8 @@
 <meta name="description" content="Directorio digital del Club de Leones de Veracruz A.C.">
 <meta name="mobile-web-app-capable" content="yes">
 <title>Club de Leones — Directorio</title>
-<link rel="icon" type="image/png" href="https://res.cloudinary.com/dgfkkwypy/image/upload/v1773701524/Logo_leones_veracruz_yfyhgg.png" id="favicon-link">
-<link rel="shortcut icon" href="https://res.cloudinary.com/dgfkkwypy/image/upload/v1773701524/Logo_leones_veracruz_yfyhgg.png">
+<link rel="icon" type="image/png" href="https://res.cloudinary.com/dgfkkwypy/image/upload/c_fit,w_64/v1773701524/Logo_leones_veracruz_yfyhgg.png" id="favicon-link">
+<link rel="shortcut icon" href="https://res.cloudinary.com/dgfkkwypy/image/upload/c_fit,w_64/v1773701524/Logo_leones_veracruz_yfyhgg.png">
 <link rel="apple-touch-icon" href="icons/icon-180.png">
 <link rel="apple-touch-icon" sizes="152x152" href="icons/icon-152.png">
 <link rel="apple-touch-icon" sizes="167x167" href="icons/icon-167.png">
@@ -478,7 +478,8 @@ async function getCurrentUserContext(uid) {
       ...profile,
       rolSistema: effectiveRol,
       activoSistema: roleData.activo !== false,
-      rol: effectiveRol
+      rol: effectiveRol,
+      _sinRolDoc: !roleSnap.exists()
     };
   } catch (e) {
     console.error('getCurrentUserContext ERROR:', e);
@@ -532,16 +533,30 @@ function _audInferSeveridad(accion, datos, meta) {
   return 'informativo';
 }
 
+// IP para auditoría: se consulta UNA vez por sesión y con límite de 2 s. Antes cada
+// guardado esperaba a api.ipify.org sin timeout (con mala señal, varios segundos).
+let _audIPPromise = null;
+function _audObtenerIP() {
+  if (!_audIPPromise) {
+    _audIPPromise = (async () => {
+      try {
+        const ctrl = new AbortController();
+        const t = setTimeout(() => ctrl.abort(), 2000);
+        const r = await fetch('https://api.ipify.org?format=json', { signal: ctrl.signal });
+        clearTimeout(t);
+        const d = await r.json();
+        return d.ip || 'desconocida';
+      } catch(_) { _audIPPromise = null; return 'desconocida'; }
+    })();
+  }
+  return _audIPPromise;
+}
+
 async function logAuditoria(accion, datos = {}, meta = {}) {
   try {
     const u = window.currentUser;
     if (!u) return;
-    let ip = 'desconocida';
-    try {
-      const r = await fetch('https://api.ipify.org?format=json');
-      const d = await r.json();
-      ip = d.ip || 'desconocida';
-    } catch(_) {}
+    const ip = await _audObtenerIP();
     const dispositivo = /android|iphone|ipad/i.test(navigator.userAgent) ? 'Móvil' : 'Escritorio';
     const origen = dispositivo === 'Móvil' ? 'movil' : 'admin';
     const severidad = meta.severidad || _audInferSeveridad(accion, datos, meta);
@@ -581,8 +596,13 @@ onAuthStateChanged(auth, async (user) => {
       return;
     }
 
-    await ensureUserDoc(user);
+    // Rendimiento: leer contexto primero; ensureUserDoc (que repetía las mismas 2 lecturas)
+    // solo hace falta si aún no existe el doc de usuario o el de rol.
     let userData = await getCurrentUserContext(user.uid);
+    if (!userData || userData._sinRolDoc) {
+      await ensureUserDoc(user);
+      userData = await getCurrentUserContext(user.uid);
+    }
 
     if (!userData) {
       goTo('screen-splash');
@@ -640,21 +660,15 @@ onAuthStateChanged(auth, async (user) => {
 
     updateNavUI(userData);
 
-    try {
-      await loadDirectory();
-    } catch (e) {
-      console.error('loadDirectory ERROR:', e);
-    }
-
-    try {
-      await loadComunicados();
-    } catch (e) {
-      console.error('loadComunicados ERROR:', e);
-    }
-
+    // Rendimiento: mostrar inicio de inmediato; directorio y comunicados cargan en
+    // paralelo en segundo plano (antes se esperaban uno tras otro con la splash encima).
     goTo('screen-inicio');
+    if (loader) loader.style.display = 'none';
+    Promise.all([
+      loadDirectory().catch(e => console.error('loadDirectory ERROR:', e)),
+      loadComunicados().catch(e => console.error('loadComunicados ERROR:', e))
+    ]).then(() => { if (window.notifRefreshBadge) window.notifRefreshBadge(); });
     initPushNotifications(user.uid);
-    if (window.notifRefreshBadge) window.notifRefreshBadge();
   } catch(e) {
     console.error('Auth error:', e);
     goTo('screen-splash');
@@ -11346,9 +11360,15 @@ window.estLimpiarFiltros = function() {
 };
 
 window.estLoad = async function() {
-  const snap = await getDocs(collection(db, 'recibos'));
-  let recibos = [];
-  snap.forEach(d => recibos.push({ id: d.id, ...d.data() }));
+  // Rendimiento: las 4 colecciones se piden en paralelo y frescas; estLoadFondos y
+  // estLoadAvanzado las toman del caché (antes eran ~7 lecturas en serie, 2 repetidas).
+  const [recRows] = await Promise.all([
+    getCollectionCached('recibos', 60000, true),
+    getCollectionCached('mutualista_pagos', 60000, true).catch(() => []),
+    getCollectionCached('fondo_reserva', 60000, true).catch(() => []),
+    getCollectionCached('movimientos_financieros', 60000, true).catch(() => []),
+  ]);
+  let recibos = recRows.map(r => ({ ...r }));
 
   const anioFiltro = document.getElementById('est-filter-anio')?.value || '';
   const mesDesde   = document.getElementById('est-filter-mes-desde')?.value || '';
@@ -11403,14 +11423,10 @@ async function estLoadAvanzado(recibosCargados) {
     const mesHasta   = document.getElementById('est-filter-mes-hasta')?.value || '';
     const anioAnt    = String(Number(anioFiltro) - 1);
 
-    const movSnap = await getDocs(collection(db, 'movimientos_financieros'));
-    const movs = [];
-    movSnap.forEach(d => movs.push({ id: d.id, ...d.data() }));
+    const movs = (await getCollectionCached('movimientos_financieros', 60000)).map(r => ({ ...r }));
     window._estMovsFin = movs;
 
-    const frSnap = await getDocs(collection(db, 'fondo_reserva'));
-    const frMovs = [];
-    frSnap.forEach(d => frMovs.push({ id: d.id, ...d.data() }));
+    const frMovs = (await getCollectionCached('fondo_reserva', 60000)).map(r => ({ ...r }));
     window._estFrMovs = frMovs;
 
     // Pre-filtrar por rango de meses cuando hay año seleccionado
@@ -11751,14 +11767,11 @@ async function estLoadFondos() {
   const fmt = n => '$' + Number(n || 0).toLocaleString('es-MX', { minimumFractionDigits: 2 });
   try {
     // ── Mutualista ──
-    const mutSnap = await getDocs(collection(db, 'mutualista_pagos'));
-    let mutMovs = [];
-    mutSnap.forEach(d => mutMovs.push({ id: d.id, ...d.data() }));
+    const mutMovs = await getCollectionCached('mutualista_pagos', 60000);
     const mutDepositos = mutMovs.filter(m => m.tipo === 'saldo_inicial' || !m.tipo).reduce((s, m) => s + Number(m.monto || 0), 0);
-    const mutRecibosSnap = await getDocs(collection(db, 'recibos'));
+    const mutRecibos = await getCollectionCached('recibos', 60000);
     let totalMutCobrado = 0, totalMutPendiente = 0;
-    mutRecibosSnap.forEach(d => {
-      const r = d.data();
+    mutRecibos.forEach(r => {
       const c6 = Number(r.c6 || 0);
       if (c6 > 0) {
         if (r.estado === 'pagado') totalMutCobrado += c6;
@@ -11778,9 +11791,7 @@ async function estLoadFondos() {
 
   try {
     // ── Fondo de Reserva ──
-    const frSnap = await getDocs(collection(db, 'fondo_reserva'));
-    let frMovs = [];
-    frSnap.forEach(d => frMovs.push({ id: d.id, ...d.data() }));
+    const frMovs = await getCollectionCached('fondo_reserva', 60000);
     const frTotalDep = frMovs.filter(m => m.tipo === 'deposito' || m.tipo === 'saldo_inicial').reduce((s, m) => s + Number(m.monto || 0), 0);
     const frTotalRet = frMovs.filter(m => m.tipo === 'retiro').reduce((s, m) => s + Number(m.monto || 0), 0);
     const frSaldo = frTotalDep - frTotalRet;
@@ -13134,11 +13145,11 @@ function rbBuildReciboHTML(r,lineas,fmt,tesorero,showEstado,historial) {
 
 async function rbGetTesorero() {
   try {
-    const snap=await getDocs(collection(db,'usuarios'));
+    const rows=await getCollectionCached('usuarios',30000);
     let tesorero=null;
-    snap.forEach(d=>{const data=d.data();if(data.rol==='tesorero')tesorero=data;});
+    rows.forEach(data=>{if(data.rol==='tesorero')tesorero=data;});
     if(tesorero)return{nombre:tesorero.nombre+' '+tesorero.apellido};
-    snap.forEach(d=>{const data=d.data();if(!tesorero&&data.cargos?.includes('Tesorero'))tesorero=data;});
+    rows.forEach(data=>{if(!tesorero&&data.cargos?.includes('Tesorero'))tesorero=data;});
     if(tesorero)return{nombre:tesorero.nombre+' '+tesorero.apellido};
   } catch(e){}
   return{nombre:'Tesorero del Club'};
@@ -19552,7 +19563,7 @@ window.finCategoriaPDF = function() {
 
 // IMPORTANTE: APP_VERSION debe coincidir con "version" en version.json y con
 // VERSION en sw.js. Bumpear las 3 juntas o el banner de update queda pegado.
-const APP_VERSION = '20261008-001';
+const APP_VERSION = '20261008-002';
 
 // Referencia al SW en espera (si existe), compartida entre ambas rutas de actualización
 window._pendingSW = null;
@@ -20287,7 +20298,7 @@ body.damas-theme .filter-tab-active { background:rgba(139,74,107,0.15); color:#5
 <div id="screen-splash" class="screen active">
   <div class="splash-bg"></div>
   <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100%;padding:40px 20px 60px;position:relative;z-index:1;">
-    <div class="splash-emblem"><img src="https://res.cloudinary.com/dgfkkwypy/image/upload/v1773701524/Logo_leones_veracruz_yfyhgg.png" style="width:280px;height:280px;object-fit:contain;"></div>
+    <div class="splash-emblem"><img src="https://res.cloudinary.com/dgfkkwypy/image/upload/c_fit,w_560,f_auto,q_auto/v1773701524/Logo_leones_veracruz_yfyhgg.png" style="width:280px;height:280px;object-fit:contain;"></div>
     <div class="splash-title">Bienvenido<br>App Club de Leones</div>
     <div class="splash-sub">Directorio Digital</div>
     <div class="splash-actions">
@@ -20355,7 +20366,7 @@ body.damas-theme .filter-tab-active { background:rgba(139,74,107,0.15); color:#5
   <div id="push-banner" style="display:none;background:linear-gradient(135deg,#0D1B2A,#1A2E44);color:#fff;padding:14px 16px;font-family:'DM Sans',sans-serif;font-size:13px;line-height:1.4;"></div>
   <div class="status-bar dark"></div>
   <div class="inicio-header">
-    <img src="https://res.cloudinary.com/dgfkkwypy/image/upload/v1773701524/Logo_leones_veracruz_yfyhgg.png" class="inicio-logo" alt="Club de Leones">
+    <img src="https://res.cloudinary.com/dgfkkwypy/image/upload/c_fit,w_560,f_auto,q_auto/v1773701524/Logo_leones_veracruz_yfyhgg.png" class="inicio-logo" alt="Club de Leones">
     <div>
       <div class="inicio-club-name">Club de Leones</div>
       <div class="inicio-club-sub">Veracruz A. C.</div>
