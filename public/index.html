@@ -6681,12 +6681,21 @@ async function asisRotarCodigo() {
   const nuevo = asisNuevoCodigo();
   try {
     await updateDoc(doc(db,'asistencias',a.id), { codigo: nuevo, codigoPrev: a.codigo || null });
-  } catch(e) { console.error('asisRotarCodigo', e); return; }
+  } catch(e) {
+    console.error('asisRotarCodigo', e);
+    const cod = document.getElementById('asis-qr-codigo'); if (cod) cod.textContent = 'Sin conexión';
+    showToast('No se pudo generar el código: ' + (e.message || e), 'error');
+    return;
+  }
   const url = `${location.origin}/?asis=${encodeURIComponent(a.id)}&c=${nuevo}`;
   const box = document.getElementById('asis-qr-canvas');
   if (box && window.QRCode) {
-    box.innerHTML = '';
-    _asisQRObj = new QRCode(box, { text: url, width: 260, height: 260, correctLevel: QRCode.CorrectLevel.M });
+    try {
+      box.innerHTML = '';
+      _asisQRObj = new QRCode(box, { text: url, width: 260, height: 260, correctLevel: QRCode.CorrectLevel.M });
+    } catch(e) { console.warn('QR render', e); }
+  } else if (box) {
+    box.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#5C6B80;font-size:13px;padding:20px;">El QR no cargó. Usen el código de abajo.</div>';
   }
   const cod = document.getElementById('asis-qr-codigo'); if (cod) cod.textContent = nuevo.slice(0,3) + ' ' + nuevo.slice(3);
   let seg = ASIS_ROTACION_MS / 1000;
@@ -6701,12 +6710,19 @@ function asisQRActualizarPresentes() {
 }
 window.asisMostrarQR = async function() {
   if (!_asisDet) return;
-  try { await asisCargarScript('https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js', 'QRCode'); }
-  catch(e) { showToast('No se pudo cargar el generador de QR. Revisa tu conexión.', 'error'); return; }
   document.getElementById('asis-qr-titulo').textContent = `${_asisDet.numero ? _asisDet.numero + 'ª ' : ''}${asisTipoLabel(_asisDet.tipo)} · ${asisFechaLarga(_asisDet.fecha)}`;
+  document.getElementById('asis-qr-codigo').textContent = '······';
+  document.getElementById('asis-qr-canvas').innerHTML = '';
   document.getElementById('modal-asis-qr').style.display = 'flex';
   asisQRActualizarPresentes();
-  try { if (navigator.wakeLock) window._asisWake = await navigator.wakeLock.request('screen'); } catch(_) {}
+  // Mantener pantalla encendida SIN esperar: en la PWA de iPhone la promesa puede
+  // quedarse colgada y bloqueaba la generación del código (bug 2026-10-08).
+  try { navigator.wakeLock?.request('screen').then(w => { window._asisWake = w; }).catch(() => {}); } catch(_) {}
+  // El QR es opcional: si la librería no carga en 6 s, el código numérico sigue sirviendo.
+  await Promise.race([
+    asisCargarScript('https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js', 'QRCode').catch(() => {}),
+    new Promise(r => setTimeout(r, 6000))
+  ]);
   await asisRotarCodigo();
   if (_asisQRTimer) clearInterval(_asisQRTimer);
   _asisQRTimer = setInterval(asisRotarCodigo, ASIS_ROTACION_MS);
@@ -6776,7 +6792,10 @@ window.asisRegistrarme = async function(codigoQR, idQR) {
     showToast('✓ Asistencia registrada', 'success');
     asisCheckAbiertas();
   } else {
-    showToast('Código vencido o no válido. Pide el código actual al secretario.', 'error');
+    const conv = idQR ? null : _asisPendientes.length;
+    showToast(conv === 0 && !window._asisRegId
+      ? 'No estás en la lista de esta junta. Pide al secretario que te agregue como invitado.'
+      : 'Código vencido o no válido, o no estás en la lista. Pide el código actual al secretario.', 'error');
   }
 };
 
@@ -6831,6 +6850,16 @@ window.asisEscanear = async function() {
   };
   _asisScanLoop = requestAnimationFrame(tick);
 };
+
+// Si el socio ya tenía la app abierta cuando se abrió el pase de lista, el aviso
+// aparece al volver a la app o, estando en Inicio, en menos de un minuto.
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && window.currentUser) window.asisCheckAbiertas();
+});
+setInterval(() => {
+  const ini = document.getElementById('screen-inicio');
+  if (window.currentUser && document.visibilityState === 'visible' && ini && ini.classList.contains('active')) window.asisCheckAbiertas();
+}, 45000);
 
 // QR escaneado con la cámara del teléfono (abre la app con ?asis=…&c=…)
 (function asisCapturarURL() {
@@ -20162,7 +20191,7 @@ window.finCategoriaPDF = function() {
 
 // IMPORTANTE: APP_VERSION debe coincidir con "version" en version.json y con
 // VERSION en sw.js. Bumpear las 3 juntas o el banner de update queda pegado.
-const APP_VERSION = '20261009-002';
+const APP_VERSION = '20261009-003';
 
 // Referencia al SW en espera (si existe), compartida entre ambas rutas de actualización
 window._pendingSW = null;
