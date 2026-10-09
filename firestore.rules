@@ -789,12 +789,18 @@ service cloud.firestore {
         && request.resource.data.tipo in ['directiva','asamblea']
         && request.resource.data.estado == 'abierta'
         && request.resource.data.convocadosUIDs is list;
-      allow update, delete: if esLiderVotacion();
+      // Una vez concluida (estado 'cerrada') la lista es inamovible: solo se edita
+      // mientras está abierta (concluir = la última actualización permitida).
+      allow update: if esLiderVotacion() && resource.data.estado == 'abierta';
+      allow delete: if esLiderVotacion();
 
       // Marca de asistencia por socio (id = uid).
       match /registros/{uid} {
         allow read: if isSelf(uid) || esLiderVotacion() || esDirectivaVotante();
-        allow write: if esLiderVotacion();
+        allow write: if esLiderVotacion() && asistenciaData(aid).estado == 'abierta';
+        // Al eliminar una lista completa se borra primero el doc padre y luego sus marcas.
+        allow delete: if esLiderVotacion()
+          && !exists(/databases/$(database)/documents/asistencias/$(aid));
         // Auto-registro por QR/código: solo uno mismo, convocado, lista abierta y
         // con el código vigente (el celular del líder lo rota cada 30 s).
         allow create, update: if isSelf(uid) && isApprovedMember()

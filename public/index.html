@@ -6569,7 +6569,7 @@ function asisRenderFilas() {
   const q = _asisFiltro;
   const arr = (a.convocados || []).map((c, i) => ({ c, i })).filter(({c}) => !q || c.nombre.toLowerCase().includes(q) || (c.cargo||'').toLowerCase().includes(q));
   if (!arr.length) { cont.innerHTML = '<div style="text-align:center;padding:20px;color:#5C6B80;font-size:13px;">Sin coincidencias.</div>'; return; }
-  const lider = votEsLider();
+  const lider = votEsLider() && a.estado === 'abierta';   // concluida = inamovible
   cont.innerHTML = arr.map(({c, i}) => {
     const r = _asisRegs[c.uid] || {};
     const e = r.estado || 'ausente';
@@ -6620,7 +6620,7 @@ function asisRenderDetalle() {
     <div id="asis-det-kpis">${asisKpisHTML(r)}</div>
     ${!lider ? '<div style="height:10px;"></div>'
       : abierta ? `<div style="display:flex;gap:8px;margin:12px 0 6px;">${btn('📱 Mostrar QR','asisMostrarQR()',navy)}${btn('＋ Invitado','asisAgregarInvitado()',claro)}</div>`
-      : `<div style="font-size:12px;color:#8A6D2F;background:rgba(201,151,58,0.1);border-radius:10px;padding:8px 10px;margin:12px 0 6px;">Lista cerrada. Aún puedes corregir marcas si hace falta.</div>`}
+      : `<div style="font-size:12px;color:#5A6B80;background:#F2EEE6;border-radius:10px;padding:8px 10px;margin:12px 0 6px;">🔒 Junta concluida: las asistencias quedaron registradas y ya no se pueden modificar.</div>`}
     <div id="asis-inv-panel" style="display:none;background:#FBF8F2;border:1.5px solid #E8E0D4;border-radius:12px;padding:10px;margin:6px 0 8px;">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
         <div style="font-size:12.5px;font-weight:800;color:#0D1B2A;">＋ Agregar socio invitado</div>
@@ -6630,11 +6630,11 @@ function asisRenderDetalle() {
       <div id="asis-inv-sug" style="margin-top:6px;max-height:240px;overflow-y:auto;"></div>
     </div>
     <input id="asis-det-buscar" class="form-input" placeholder="🔍 Buscar nombre o cargo" oninput="asisFiltrar(this.value)" style="margin:6px 0 4px;">
-    ${lider ? '<div style="font-size:11px;color:#8A9BB0;margin-bottom:2px;">✓ = presente · J = justificado · toca de nuevo para quitar</div>' : ''}
+    ${lider && abierta ? '<div style="font-size:11px;color:#8A9BB0;margin-bottom:2px;">✓ = presente · J = justificado · toca de nuevo para quitar</div>' : ''}
     <div id="asis-det-filas"></div>
     <div style="display:flex;gap:8px;margin-top:16px;">
       ${btn('🖨 Imprimir / PDF','asisImprimir()',claro)}
-      ${!lider ? '' : abierta ? btn('⏹ Concluir junta','asisConcluir()',navy) : btn('↩️ Reabrir','asisReabrir()',claro)}
+      ${lider && abierta ? btn('⏹ Concluir junta','asisConcluir()',navy) : ''}
     </div>
     ${lider ? `<button onclick="asisEliminar()" style="width:100%;margin-top:10px;background:none;color:#C0392B;border:1.5px solid rgba(192,57,43,0.35);border-radius:12px;padding:11px;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;cursor:pointer;">🗑️ Eliminar lista</button>` : ''}`;
   asisRenderFilas();
@@ -6649,6 +6649,7 @@ function asisKpisHTML(r) {
 
 window.asisMarcar = async function(uid, estado) {
   if (!votEsLider() || !_asisDet) return;
+  if (_asisDet.estado !== 'abierta') { showToast('La junta ya concluyó; las asistencias no se pueden modificar.', 'error'); return; }
   const actual = _asisRegs[uid]?.estado;
   const ref = doc(db,'asistencias',_asisDet.id,'registros',uid);
   const c = (_asisDet.convocados || []).find(x => x.uid === uid) || {};
@@ -6664,7 +6665,7 @@ let _asisInvUsuarios = null;
 
 // Abre/cierra el buscador de invitados (sugerencias en vivo desde el directorio)
 window.asisAgregarInvitado = async function() {
-  const panel = document.getElementById('asis-inv-panel'); if (!panel || !_asisDet) return;
+  const panel = document.getElementById('asis-inv-panel'); if (!panel || !_asisDet || _asisDet.estado !== 'abierta') return;
   if (panel.style.display === 'block') { panel.style.display = 'none'; return; }
   panel.style.display = 'block';
   const inp = document.getElementById('asis-inv-buscar');
@@ -6714,6 +6715,7 @@ window.asisInvElegir = async function(uid) {
 
 window.asisConcluir = async function() {
   if (!_asisDet) return;
+  if (!confirm('¿Concluir la junta?\n\nUna vez concluida, las asistencias quedan registradas y YA NO se podrán modificar.')) return;
   const horaFin = prompt('Hora en que concluyó la junta (HH:MM):', asisHoraAhora());
   if (horaFin === null) return;
   const r = asisResumen(_asisDet, _asisRegs);
@@ -6727,18 +6729,13 @@ window.asisConcluir = async function() {
     asisLoad();
   } catch(e) { console.error('asisConcluir', e); showToast('No se pudo concluir: ' + (e.message || e), 'error'); }
 };
-window.asisReabrir = async function() {
-  if (!_asisDet || !confirm('¿Reabrir el pase de lista?')) return;
-  try { await updateDoc(doc(db,'asistencias',_asisDet.id), { estado: 'abierta', closedAt: null }); asisLoad(); }
-  catch(e) { showToast('No se pudo reabrir: ' + (e.message || e), 'error'); }
-};
 window.asisEliminar = async function() {
   const a = _asisDet; if (!a) return;
   if (!confirm(`¿Eliminar la lista de la ${asisTitulo(a)} del ${asisFechaLarga(a.fecha)}?\n\nSe borrarán todas sus marcas de asistencia. No se puede deshacer.`)) return;
   try {
     const regs = await getDocs(collection(db,'asistencias',a.id,'registros'));
-    await Promise.all(regs.docs.map(d => deleteDoc(d.ref)));
     await deleteDoc(doc(db,'asistencias',a.id));
+    await Promise.all(regs.docs.map(d => deleteDoc(d.ref).catch(() => {})));
     logAuditoria('eliminar_lista_asistencia', { asistenciaId: a.id, tipo: a.tipo, fecha: a.fecha, numero: a.numero || null });
     asisCerrarDetalle();
     showToast('Lista eliminada', 'success');
@@ -20275,7 +20272,7 @@ window.finCategoriaPDF = function() {
 
 // IMPORTANTE: APP_VERSION debe coincidir con "version" en version.json y con
 // VERSION en sw.js. Bumpear las 3 juntas o el banner de update queda pegado.
-const APP_VERSION = '20261009-004';
+const APP_VERSION = '20261009-005';
 
 // Referencia al SW en espera (si existe), compartida entre ambas rutas de actualización
 window._pendingSW = null;
