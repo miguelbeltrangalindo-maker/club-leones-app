@@ -6334,7 +6334,19 @@ function asisFechaLarga(iso) {
   const d = new Date(iso + 'T12:00:00');
   return d.toLocaleDateString('es-MX', { day:'numeric', month:'long', year:'numeric' });
 }
-function asisTipoLabel(t) { return t === 'asamblea' ? 'Asamblea de socios' : 'Junta de Directiva'; }
+// Reuniones: tipo directiva|asamblea × carácter ordinaria|extraordinaria (sin carácter = ordinaria)
+function asisTipoLabel(t, caracter) {
+  const ext = caracter === 'extraordinaria';
+  return t === 'asamblea' ? (ext ? 'Asamblea Extraordinaria' : 'Asamblea Ordinaria') : (ext ? 'Junta Extraordinaria de Directiva' : 'Junta Ordinaria de Directiva');
+}
+function asisTitulo(a) { return `${a.numero ? a.numero + 'ª ' : ''}${asisTipoLabel(a.tipo, a.caracter)}`; }
+// Número de reunión: la Junta Ordinaria de Directiva sigue el mes del periodo
+// (julio = 1ª … junio = 12ª). El resto se numera en orden dentro del periodo.
+function asisNumeroMes(fechaISO) {
+  const d = fechaISO ? new Date(fechaISO + 'T12:00:00') : new Date();
+  return ((d.getMonth() - 6 + 12) % 12) + 1;
+}
+const ASIS_MES_PERIODO = ['julio','agosto','septiembre','octubre','noviembre','diciembre','enero','febrero','marzo','abril','mayo','junio'];
 function asisEtiq(c) { return ASIS_ETIQ[c] || c; }
 function asisNombre(m) { return `${m.nombre || ''} ${m.apellido || ''}`.trim() || 'Sin nombre'; }
 
@@ -6374,35 +6386,71 @@ function asisResumen(a, regs) {
 }
 
 // ── Hub / pantalla ──
+// Toda la directiva consulta las listas; solo los líderes (votEsLider) las crean y marcan.
+function asisPuedeVer() { return votEsLider() || votEsDirectiva(); }
 window.asisHubInit = function() {
   const w = document.getElementById('hub-asistencia-wrap');
-  if (w) w.style.display = votEsLider() ? 'block' : 'none';
+  if (w) w.style.display = asisPuedeVer() ? 'block' : 'none';
+};
+let _asisFiltroPeriodo = null, _asisFiltroTipo = 'todas';
+const ASIS_FILTROS = [
+  ['todas','Todas'], ['directiva-ordinaria','Juntas ordinarias'], ['directiva-extraordinaria','Juntas extraordinarias'],
+  ['asamblea-ordinaria','Asambleas ordinarias'], ['asamblea-extraordinaria','Asambleas extraordinarias']
+];
+window.asisSetFiltro = function(campo, valor) {
+  if (campo === 'periodo') _asisFiltroPeriodo = valor; else _asisFiltroTipo = valor;
+  asisLoad(campo === 'tipo');
 };
 
-window.asisLoad = async function() {
+window.asisLoad = async function(soloRender) {
   const cont = document.getElementById('asis-lista'); if (!cont) return;
-  if (!votEsLider()) { cont.innerHTML = '<div style="text-align:center;padding:40px;color:#5C6B80;">Solo Presidente, Secretario y Tesorero pueden pasar lista.</div>'; return; }
+  const btnNueva = document.getElementById('asis-btn-nueva');
+  if (btnNueva) btnNueva.style.display = votEsLider() ? 'block' : 'none';
+  if (!asisPuedeVer()) { cont.innerHTML = '<div style="text-align:center;padding:40px;color:#5C6B80;">Solo la mesa directiva puede consultar las listas de asistencia.</div>'; return; }
+  const actual = asisPeriodo();
+  if (!_asisFiltroPeriodo) _asisFiltroPeriodo = actual;
+  const ini = Number(actual.split('-')[0]);
+  const periodos = Array.from({ length: 5 }, (_, k) => `${ini - k}-${ini - k + 1}`);
+  const filtros = `
+    <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px;">
+      <label style="font-size:12px;font-weight:700;color:#5C6B80;">Periodo</label>
+      <select class="form-input" onchange="asisSetFiltro('periodo', this.value)" style="flex:1;margin:0;padding:10px;">
+        ${periodos.map(p => `<option value="${p}" ${p === _asisFiltroPeriodo ? 'selected' : ''}>${p.replace('-', ' – ')}${p === actual ? ' (actual)' : ''}</option>`).join('')}
+      </select>
+    </div>
+    <div style="display:flex;gap:6px;overflow-x:auto;padding-bottom:6px;margin-bottom:8px;-webkit-overflow-scrolling:touch;">
+      ${ASIS_FILTROS.map(([k, t]) => `<button onclick="asisSetFiltro('tipo','${k}')" style="flex-shrink:0;padding:8px 12px;border-radius:20px;border:1.5px solid ${_asisFiltroTipo === k ? '#0D1B2A' : '#E8E0D4'};background:${_asisFiltroTipo === k ? '#0D1B2A' : '#fff'};color:${_asisFiltroTipo === k ? '#E8B84B' : '#5C6B80'};font-family:'DM Sans',sans-serif;font-size:12px;font-weight:700;cursor:pointer;">${t}</button>`).join('')}
+    </div>`;
   try {
-    const snap = await getDocs(query(collection(db,'asistencias'), orderBy('createdAt','desc'), limit(60)));
-    _asisCache = []; snap.forEach(d => _asisCache.push({ id: d.id, ...d.data() }));
-    if (!_asisCache.length) { cont.innerHTML = '<div style="text-align:center;padding:50px 20px;color:#5C6B80;font-size:13px;">Aún no hay listas de asistencia.<br>Toca “Nueva lista” al iniciar la junta.</div>'; return; }
-    cont.innerHTML = _asisCache.map(a => {
+    if (!soloRender || !_asisCache.length || _asisCache[0]?.periodo !== _asisFiltroPeriodo) {
+      cont.innerHTML = filtros + '<div style="text-align:center;padding:40px 20px;color:#5C6B80;font-size:13px;">Cargando listas…</div>';
+      const snap = await getDocs(query(collection(db,'asistencias'), where('periodo','==',_asisFiltroPeriodo)));
+      _asisCache = []; snap.forEach(d => _asisCache.push({ id: d.id, ...d.data() }));
+      _asisCache.sort((a, b) => String(b.fecha || '').localeCompare(String(a.fecha || '')) || (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
+    }
+    const lista = _asisCache.filter(a => _asisFiltroTipo === 'todas' || `${a.tipo}-${a.caracter || 'ordinaria'}` === _asisFiltroTipo);
+    if (!lista.length) {
+      cont.innerHTML = filtros + `<div style="text-align:center;padding:40px 20px;color:#5C6B80;font-size:13px;">No hay listas de asistencia con este filtro.${votEsLider() ? '<br>Toca “Nueva lista” al iniciar la junta.' : ''}</div>`;
+      return;
+    }
+    cont.innerHTML = filtros + lista.map(a => {
       const abierta = a.estado === 'abierta';
       const r = a.resumen;
-      const pie = abierta ? '<span style="color:#1A7A4A;font-weight:700;">● Abierta</span> · toca para pasar lista'
+      const pie = abierta ? `<span style="color:#1A7A4A;font-weight:700;">● Abierta</span>${votEsLider() ? ' · toca para pasar lista' : ''}`
         : (r ? `${r.presentes} de ${r.total} presentes · ${r.hayQuorum ? '✔ Hubo quórum' : '✖ Sin quórum'}` : 'Cerrada');
-      return `<div class="vot-card" onclick="asisAbrirDetalle('${a.id}')">
+      const ext = a.caracter === 'extraordinaria';
+      return `<div class="vot-card" onclick="asisAbrirDetalle('${a.id}')" ${ext ? 'style="border-left:4px solid #C9973A;"' : ''}>
         <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;margin-bottom:6px;">
-          <div class="vot-card-ttl">${a.tipo === 'asamblea' ? '👥' : '🦁'} ${a.numero ? esc(String(a.numero)) + 'ª ' : ''}${esc(asisTipoLabel(a.tipo))}</div>
+          <div class="vot-card-ttl">${a.tipo === 'asamblea' ? '👥' : '🦁'} ${esc(asisTitulo(a))}</div>
           <span class="vot-badge ${abierta?'abierta':'cerrada'}">${abierta?'Abierta':'Cerrada'}</span>
         </div>
-        <div style="font-size:12px;color:#5C6B80;margin-bottom:6px;">${esc(asisFechaLarga(a.fecha))} · Periodo ${esc(a.periodo||'')}</div>
+        <div style="font-size:12px;color:#5C6B80;margin-bottom:6px;">${esc(asisFechaLarga(a.fecha))}${a.horaInicio ? ' · ' + esc(a.horaInicio) + (a.horaFin ? '–' + esc(a.horaFin) : '') : ''}</div>
         <div style="font-size:12.5px;color:#5A6B80;">${pie}</div>
       </div>`;
     }).join('');
   } catch(e) {
     console.error('asisLoad', e);
-    cont.innerHTML = '<div style="text-align:center;padding:40px;color:#C0392B;font-size:13px;">No se pudieron cargar las listas.</div>';
+    cont.innerHTML = filtros + '<div style="text-align:center;padding:40px;color:#C0392B;font-size:13px;">No se pudieron cargar las listas.</div>';
   }
 };
 
@@ -6411,17 +6459,42 @@ window.asisNvSetTipo = function(tipo) {
   document.getElementById('asis-nv-tipo').value = tipo;
   document.getElementById('asis-nv-tipo-directiva').classList.toggle('vot-aud-on', tipo === 'directiva');
   document.getElementById('asis-nv-tipo-asamblea').classList.toggle('vot-aud-on', tipo === 'asamblea');
-  const periodo = asisPeriodo(document.getElementById('asis-nv-fecha').value);
-  const n = _asisCache.filter(a => a.tipo === tipo && a.periodo === periodo).length + 1;
-  document.getElementById('asis-nv-numero').value = n;
-  document.getElementById('asis-nv-nota').innerHTML = tipo === 'directiva'
-    ? 'La lista se arma con los socios que tienen cargo en la mesa directiva. Puedes agregar socios invitados después.'
-    : 'La lista incluye a todos los socios activos. El quórum es la mayoría de ellos.';
+  asisNvActualizar();
+};
+window.asisNvSetCaracter = function(car) {
+  document.getElementById('asis-nv-caracter').value = car;
+  document.getElementById('asis-nv-car-ordinaria').classList.toggle('vot-aud-on', car === 'ordinaria');
+  document.getElementById('asis-nv-car-extraordinaria').classList.toggle('vot-aud-on', car === 'extraordinaria');
+  asisNvActualizar();
+};
+// Número sugerido. Para la Junta Ordinaria de Directiva sale del mes; para las demás
+// se cuenta cuántas del mismo tipo hay en el periodo (lista en memoria = periodo filtrado).
+function asisNvNumero(tipo, caracter, fecha, existentes) {
+  if (tipo === 'directiva' && caracter === 'ordinaria') return asisNumeroMes(fecha);
+  const periodo = asisPeriodo(fecha);
+  return existentes.filter(a => a.periodo === periodo && a.tipo === tipo && (a.caracter || 'ordinaria') === caracter).length + 1;
+}
+window.asisNvActualizar = function() {
+  const tipo = document.getElementById('asis-nv-tipo').value;
+  const caracter = document.getElementById('asis-nv-caracter').value;
+  const fecha = document.getElementById('asis-nv-fecha').value || asisHoyISO();
+  const n = asisNvNumero(tipo, caracter, fecha, _asisCache);
+  const mes = ASIS_MES_PERIODO[asisNumeroMes(fecha) - 1];
+  const regla = (tipo === 'directiva' && caracter === 'ordinaria')
+    ? `(por ser ${mes}, mes ${asisNumeroMes(fecha)} del periodo ${asisPeriodo(fecha).replace('-', '–')})`
+    : `(en orden dentro del periodo ${asisPeriodo(fecha).replace('-', '–')})`;
+  document.getElementById('asis-nv-nota').innerHTML = `
+    <div style="background:rgba(201,151,58,0.1);border-radius:10px;padding:10px 12px;color:#0D1B2A;">Será la <b>${n}ª ${esc(asisTipoLabel(tipo, caracter))}</b> <span style="color:#5C6B80;">${regla}</span></div>
+    <div style="margin-top:8px;">${tipo === 'directiva'
+      ? 'La lista se arma con los socios que tienen cargo en la mesa directiva. Puedes agregar socios invitados después.'
+      : 'La lista incluye a todos los socios activos. El quórum es la mayoría de ellos.'}</div>`;
 };
 window.asisAbrirNueva = function() {
   if (!votEsLider()) { showToast('No tienes permiso', 'error'); return; }
   document.getElementById('asis-nv-fecha').value = asisHoyISO();
   document.getElementById('asis-nv-hora').value = asisHoraAhora();
+  document.getElementById('asis-nv-caracter').value = 'ordinaria';
+  asisNvSetCaracter('ordinaria');
   asisNvSetTipo('directiva');
   document.getElementById('modal-asis-nueva').style.display = 'flex';
 };
@@ -6432,22 +6505,29 @@ window.asisCrear = async function() {
   const tipo = document.getElementById('asis-nv-tipo').value;
   const fecha = document.getElementById('asis-nv-fecha').value || asisHoyISO();
   const horaInicio = document.getElementById('asis-nv-hora').value || asisHoraAhora();
-  const numero = parseInt(document.getElementById('asis-nv-numero').value, 10) || null;
+  const caracter = document.getElementById('asis-nv-caracter').value === 'extraordinaria' ? 'extraordinaria' : 'ordinaria';
   const btn = document.getElementById('asis-nv-save');
   btn.disabled = true; btn.textContent = 'Preparando lista…';
   try {
+    // Número con datos frescos del periodo de la fecha elegida
+    const periodoSnap = await getDocs(query(collection(db,'asistencias'), where('periodo','==',asisPeriodo(fecha))));
+    const delPeriodo = []; periodoSnap.forEach(d => delPeriodo.push(d.data()));
+    const numero = asisNvNumero(tipo, caracter, fecha, delPeriodo);
+    const repetida = delPeriodo.find(a => a.tipo === tipo && (a.caracter || 'ordinaria') === caracter && a.numero === numero);
+    if (repetida && !confirm(`Ya existe la ${numero}ª ${asisTipoLabel(tipo, caracter)} (${asisFechaLarga(repetida.fecha)}).\n\n¿Crear otra lista de todos modos?`)) return;
     const usuarios = await getCollectionCached('usuarios', 30000, true);
     const convocados = asisConstruirConvocados(tipo, usuarios);
     if (!convocados.length) { showToast(tipo === 'directiva' ? 'No hay socios con cargo de directiva' : 'No hay socios activos', 'error'); return; }
     const u = window.currentUser;
     const ref = await addDoc(collection(db,'asistencias'), {
-      tipo, numero, fecha, periodo: asisPeriodo(fecha), horaInicio, horaFin: null,
+      tipo, caracter, numero, fecha, periodo: asisPeriodo(fecha), horaInicio, horaFin: null,
       estado: 'abierta', convocados, convocadosUIDs: convocados.map(c => c.uid),
       codigo: null, codigoPrev: null,
       creadaPorUID: u.uid, creadaPorNombre: asisNombre(u),
       createdAt: Timestamp.now(), closedAt: null
     });
-    logAuditoria('crear_lista_asistencia', { asistenciaId: ref.id, tipo, numero, fecha, convocados: convocados.length });
+    logAuditoria('crear_lista_asistencia', { asistenciaId: ref.id, tipo, caracter, numero, fecha, convocados: convocados.length });
+    _asisFiltroPeriodo = asisPeriodo(fecha);
     asisCerrarNueva();
     showToast('Pase de lista abierto ✓', 'success');
     asisLoad();
@@ -6489,6 +6569,7 @@ function asisRenderFilas() {
   const q = _asisFiltro;
   const arr = (a.convocados || []).map((c, i) => ({ c, i })).filter(({c}) => !q || c.nombre.toLowerCase().includes(q) || (c.cargo||'').toLowerCase().includes(q));
   if (!arr.length) { cont.innerHTML = '<div style="text-align:center;padding:20px;color:#5C6B80;font-size:13px;">Sin coincidencias.</div>'; return; }
+  const lider = votEsLider();
   cont.innerHTML = arr.map(({c, i}) => {
     const r = _asisRegs[c.uid] || {};
     const e = r.estado || 'ausente';
@@ -6505,8 +6586,8 @@ function asisRenderFilas() {
         <div style="font-size:11.5px;color:#8A6D2F;">${esc(c.cargo || '')}${c.invitado ? ' · invitado' : ''}</div>
         <div style="font-size:11.5px;margin-top:1px;">${sub}</div>
       </div>
-      <button onclick="asisMarcar('${jsAttrEsc(c.uid)}','presente')" aria-label="Presente" style="${bP}width:46px;height:42px;border-radius:10px;font-size:18px;font-weight:800;cursor:pointer;flex-shrink:0;">✓</button>
-      <button onclick="asisMarcar('${jsAttrEsc(c.uid)}','justificado')" aria-label="Justificado" style="${bJ}width:46px;height:42px;border-radius:10px;font-size:14px;font-weight:800;cursor:pointer;flex-shrink:0;">J</button>
+      ${lider ? `<button onclick="asisMarcar('${jsAttrEsc(c.uid)}','presente')" aria-label="Presente" style="${bP}width:46px;height:42px;border-radius:10px;font-size:18px;font-weight:800;cursor:pointer;flex-shrink:0;">✓</button>
+      <button onclick="asisMarcar('${jsAttrEsc(c.uid)}','justificado')" aria-label="Justificado" style="${bJ}width:46px;height:42px;border-radius:10px;font-size:14px;font-weight:800;cursor:pointer;flex-shrink:0;">J</button>` : ''}
     </div>`;
   }).join('');
 }
@@ -6523,20 +6604,22 @@ function asisRenderDetalle() {
     asisRenderFilas(); return;
   }
   cont.dataset.id = a.id; cont.dataset.estado = a.estado;
+  const lider = votEsLider();
   const btn = (txt, fn, estilo) => `<button onclick="${fn}" style="flex:1;padding:12px 8px;border-radius:12px;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:800;cursor:pointer;${estilo}">${txt}</button>`;
   const navy = 'background:linear-gradient(135deg,#0D1B2A,#1A2E42);color:#E8B84B;border:none;';
   const claro = 'background:#fff;color:#0D1B2A;border:1.5px solid #E8E0D4;';
   cont.innerHTML = `
     <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;">
       <div>
-        <div class="modal-title" style="text-align:left;margin:0;">${a.numero ? esc(String(a.numero)) + 'ª ' : ''}${esc(asisTipoLabel(a.tipo))}</div>
+        <div class="modal-title" style="text-align:left;margin:0;">${esc(asisTitulo(a))}</div>
         <div style="font-size:12.5px;color:#5C6B80;margin-top:2px;">${esc(asisFechaLarga(a.fecha))} · Inicio ${esc(a.horaInicio||'—')}${a.horaFin ? ' · Concluyó ' + esc(a.horaFin) : ''}</div>
       </div>
       <button onclick="asisCerrarDetalle()" style="background:none;border:none;font-size:24px;color:#5C6B80;cursor:pointer;line-height:1;">×</button>
     </div>
     <div style="margin:6px 0 10px;"><span class="vot-badge ${abierta?'abierta':'cerrada'}">${abierta?'Abierta':'Cerrada'}</span></div>
     <div id="asis-det-kpis">${asisKpisHTML(r)}</div>
-    ${abierta ? `<div style="display:flex;gap:8px;margin:12px 0 6px;">${btn('📱 Mostrar QR','asisMostrarQR()',navy)}${btn('＋ Invitado','asisAgregarInvitado()',claro)}</div>`
+    ${!lider ? '<div style="height:10px;"></div>'
+      : abierta ? `<div style="display:flex;gap:8px;margin:12px 0 6px;">${btn('📱 Mostrar QR','asisMostrarQR()',navy)}${btn('＋ Invitado','asisAgregarInvitado()',claro)}</div>`
       : `<div style="font-size:12px;color:#8A6D2F;background:rgba(201,151,58,0.1);border-radius:10px;padding:8px 10px;margin:12px 0 6px;">Lista cerrada. Aún puedes corregir marcas si hace falta.</div>`}
     <div id="asis-inv-panel" style="display:none;background:#FBF8F2;border:1.5px solid #E8E0D4;border-radius:12px;padding:10px;margin:6px 0 8px;">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
@@ -6547,13 +6630,13 @@ function asisRenderDetalle() {
       <div id="asis-inv-sug" style="margin-top:6px;max-height:240px;overflow-y:auto;"></div>
     </div>
     <input id="asis-det-buscar" class="form-input" placeholder="🔍 Buscar nombre o cargo" oninput="asisFiltrar(this.value)" style="margin:6px 0 4px;">
-    <div style="font-size:11px;color:#8A9BB0;margin-bottom:2px;">✓ = presente · J = justificado · toca de nuevo para quitar</div>
+    ${lider ? '<div style="font-size:11px;color:#8A9BB0;margin-bottom:2px;">✓ = presente · J = justificado · toca de nuevo para quitar</div>' : ''}
     <div id="asis-det-filas"></div>
     <div style="display:flex;gap:8px;margin-top:16px;">
       ${btn('🖨 Imprimir / PDF','asisImprimir()',claro)}
-      ${abierta ? btn('⏹ Concluir junta','asisConcluir()',navy) : btn('↩️ Reabrir','asisReabrir()',claro)}
+      ${!lider ? '' : abierta ? btn('⏹ Concluir junta','asisConcluir()',navy) : btn('↩️ Reabrir','asisReabrir()',claro)}
     </div>
-    <button onclick="asisEliminar()" style="width:100%;margin-top:10px;background:none;color:#C0392B;border:1.5px solid rgba(192,57,43,0.35);border-radius:12px;padding:11px;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;cursor:pointer;">🗑️ Eliminar lista</button>`;
+    ${lider ? `<button onclick="asisEliminar()" style="width:100%;margin-top:10px;background:none;color:#C0392B;border:1.5px solid rgba(192,57,43,0.35);border-radius:12px;padding:11px;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;cursor:pointer;">🗑️ Eliminar lista</button>` : ''}`;
   asisRenderFilas();
 }
 function asisKpisHTML(r) {
@@ -6651,7 +6734,7 @@ window.asisReabrir = async function() {
 };
 window.asisEliminar = async function() {
   const a = _asisDet; if (!a) return;
-  if (!confirm(`¿Eliminar la lista de ${asisTipoLabel(a.tipo)} del ${asisFechaLarga(a.fecha)}?\n\nSe borrarán todas sus marcas de asistencia. No se puede deshacer.`)) return;
+  if (!confirm(`¿Eliminar la lista de la ${asisTitulo(a)} del ${asisFechaLarga(a.fecha)}?\n\nSe borrarán todas sus marcas de asistencia. No se puede deshacer.`)) return;
   try {
     const regs = await getDocs(collection(db,'asistencias',a.id,'registros'));
     await Promise.all(regs.docs.map(d => deleteDoc(d.ref)));
@@ -6710,7 +6793,7 @@ function asisQRActualizarPresentes() {
 }
 window.asisMostrarQR = async function() {
   if (!_asisDet) return;
-  document.getElementById('asis-qr-titulo').textContent = `${_asisDet.numero ? _asisDet.numero + 'ª ' : ''}${asisTipoLabel(_asisDet.tipo)} · ${asisFechaLarga(_asisDet.fecha)}`;
+  document.getElementById('asis-qr-titulo').textContent = `${asisTitulo(_asisDet)} · ${asisFechaLarga(_asisDet.fecha)}`;
   document.getElementById('asis-qr-codigo').textContent = '······';
   document.getElementById('asis-qr-canvas').innerHTML = '';
   document.getElementById('modal-asis-qr').style.display = 'flex';
@@ -6746,7 +6829,7 @@ window.asisCheckAbiertas = async function() {
     _asisPendientes = mias.filter((a, i) => !(regs[i] && regs[i].exists() && regs[i].data().estado === 'presente'));
     banner.style.display = _asisPendientes.length ? 'flex' : 'none';
     const sub = document.getElementById('inicio-asis-banner-sub');
-    if (sub && _asisPendientes[0]) sub.textContent = `${asisTipoLabel(_asisPendientes[0].tipo)} · toca para registrar tu asistencia`;
+    if (sub && _asisPendientes[0]) sub.textContent = `${asisTitulo(_asisPendientes[0])} · toca para registrar tu asistencia`;
   } catch(e) { console.warn('asisCheckAbiertas', e); }
 };
 
@@ -6754,7 +6837,7 @@ window.asisAbrirRegistro = function(prefCodigo, prefId) {
   const body = document.getElementById('asis-reg-body'); if (!body) return;
   const a = (prefId && _asisPendientes.find(x => x.id === prefId)) || _asisPendientes[0];
   body.innerHTML = `
-    ${a ? `<div style="text-align:center;font-size:13px;color:#5C6B80;margin-bottom:14px;">${esc(asisTipoLabel(a.tipo))} · ${esc(asisFechaLarga(a.fecha))}</div>` : ''}
+    ${a ? `<div style="text-align:center;font-size:13px;color:#5C6B80;margin-bottom:14px;">${esc(asisTitulo(a))} · ${esc(asisFechaLarga(a.fecha))}</div>` : ''}
     <button onclick="asisEscanear()" style="width:100%;padding:16px;background:linear-gradient(135deg,#0D1B2A,#1A2E42);color:#E8B84B;border:none;border-radius:14px;font-family:'DM Sans',sans-serif;font-size:16px;font-weight:800;cursor:pointer;">📷 Escanear QR</button>
     <div id="asis-scan-wrap" style="display:none;margin-top:12px;position:relative;border-radius:14px;overflow:hidden;background:#000;">
       <video id="asis-scan-video" playsinline muted style="width:100%;display:block;"></video>
@@ -6887,8 +6970,9 @@ window.asisImprimir = function() {
   const r = asisResumen(a, _asisRegs);
   const d = a.fecha ? new Date(a.fecha + 'T12:00:00') : new Date();
   const [pIni, pFin] = String(a.periodo || '').split('-');
-  const titulo = a.tipo === 'asamblea' ? 'ASISTENCIA A ASAMBLEA DE SOCIOS' : 'ASISTENCIA A JUNTA DE MESA DIRECTIVA';
-  const junta = a.tipo === 'asamblea' ? 'ASAMBLEA' : 'JUNTA DE MESA DIRECTIVA';
+  const car = a.caracter === 'extraordinaria' ? 'EXTRAORDINARIA' : 'ORDINARIA';
+  const titulo = a.tipo === 'asamblea' ? `ASISTENCIA A ASAMBLEA ${car} DE SOCIOS` : `ASISTENCIA A JUNTA ${car} DE MESA DIRECTIVA`;
+  const junta = a.tipo === 'asamblea' ? `ASAMBLEA ${car}` : `JUNTA ${car} DE MESA DIRECTIVA`;
   const filas = (a.convocados || []).map((c, i) => {
     const g = _asisRegs[c.uid] || {};
     const hora = g.ts?.seconds ? new Date(g.ts.seconds * 1000).toLocaleTimeString('es-MX', { hour:'2-digit', minute:'2-digit' }) : '';
@@ -20191,7 +20275,7 @@ window.finCategoriaPDF = function() {
 
 // IMPORTANTE: APP_VERSION debe coincidir con "version" en version.json y con
 // VERSION en sw.js. Bumpear las 3 juntas o el banner de update queda pegado.
-const APP_VERSION = '20261009-003';
+const APP_VERSION = '20261009-004';
 
 // Referencia al SW en espera (si existe), compartida entre ambas rutas de actualización
 window._pendingSW = null;
@@ -22125,7 +22209,7 @@ body.damas-theme .filter-tab-active { background:rgba(139,74,107,0.15); color:#5
     <p>Asistencia a juntas de directiva y asambleas</p>
   </div>
   <div class="recursos-body">
-    <button onclick="asisAbrirNueva()" style="width:100%;margin-bottom:14px;background:linear-gradient(135deg,#E8B84B,#C9973A);color:#0D1B2A;border:none;border-radius:14px;padding:15px;font-family:'DM Sans',sans-serif;font-size:15px;font-weight:800;cursor:pointer;">＋ Nueva lista de asistencia</button>
+    <button id="asis-btn-nueva" onclick="asisAbrirNueva()" style="width:100%;margin-bottom:14px;background:linear-gradient(135deg,#E8B84B,#C9973A);color:#0D1B2A;border:none;border-radius:14px;padding:15px;font-family:'DM Sans',sans-serif;font-size:15px;font-weight:800;cursor:pointer;">＋ Nueva lista de asistencia</button>
     <div id="asis-lista">
       <div style="text-align:center;padding:50px 20px;color:#5C6B80;font-size:13px;">Cargando listas…</div>
     </div>
@@ -22142,12 +22226,16 @@ body.damas-theme .filter-tab-active { background:rgba(139,74,107,0.15); color:#5
       <button type="button" id="asis-nv-tipo-asamblea" onclick="asisNvSetTipo('asamblea')" class="vot-aud-btn">👥 Asamblea de socios</button>
     </div>
     <input type="hidden" id="asis-nv-tipo" value="directiva">
+    <label class="form-label" style="margin-top:12px;">Carácter</label>
+    <div style="display:flex;gap:10px;margin-top:4px;">
+      <button type="button" id="asis-nv-car-ordinaria" onclick="asisNvSetCaracter('ordinaria')" class="vot-aud-btn vot-aud-on">Ordinaria</button>
+      <button type="button" id="asis-nv-car-extraordinaria" onclick="asisNvSetCaracter('extraordinaria')" class="vot-aud-btn">Extraordinaria</button>
+    </div>
+    <input type="hidden" id="asis-nv-caracter" value="ordinaria">
     <div style="display:flex;gap:10px;margin-top:12px;">
-      <div style="flex:1;"><label class="form-label">No. de junta / acta</label><input id="asis-nv-numero" class="form-input" type="number" min="1" inputmode="numeric"></div>
+      <div style="flex:1.3;"><label class="form-label">Fecha</label><input id="asis-nv-fecha" class="form-input" type="date" onchange="asisNvActualizar()"></div>
       <div style="flex:1;"><label class="form-label">Hora de inicio</label><input id="asis-nv-hora" class="form-input" type="time"></div>
     </div>
-    <label class="form-label" style="margin-top:12px;">Fecha</label>
-    <input id="asis-nv-fecha" class="form-input" type="date">
     <div id="asis-nv-nota" style="font-size:12px;color:#5C6B80;margin-top:10px;line-height:1.5;"></div>
     <button id="asis-nv-save" onclick="asisCrear()" class="btn-primary" style="width:100%;margin-top:16px;">Abrir pase de lista →</button>
     <button onclick="asisCerrarNueva()" style="width:100%;margin-top:8px;background:none;border:none;color:#5C6B80;font-size:14px;cursor:pointer;padding:10px;">Cancelar</button>

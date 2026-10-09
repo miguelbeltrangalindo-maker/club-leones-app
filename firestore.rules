@@ -793,7 +793,7 @@ service cloud.firestore {
 
       // Marca de asistencia por socio (id = uid).
       match /registros/{uid} {
-        allow read: if isSelf(uid) || esLiderVotacion();
+        allow read: if isSelf(uid) || esLiderVotacion() || esDirectivaVotante();
         allow write: if esLiderVotacion();
         // Auto-registro por QR/código: solo uno mismo, convocado, lista abierta y
         // con el código vigente (el celular del líder lo rota cada 30 s).
