@@ -309,6 +309,9 @@ function goTo(screenId) {
   if (screenId === 'screen-votaciones') { votLoad(); }
   else if (typeof votCerrarDetalle === 'function') { votCerrarDetalle(); }
   if (screenId === 'screen-actas' && typeof actasLoad === 'function') { actasLoad(); }
+  if (screenId === 'screen-asistencia' && typeof asisLoad === 'function') { asisLoad(); }
+  if (screenId === 'screen-directiva-hub' && typeof asisHubInit === 'function') { asisHubInit(); }
+  if (screenId === 'screen-inicio' && window.currentUser && typeof asisCheckAbiertas === 'function') { asisCheckAbiertas(); }
   if (screenId === 'screen-inicio') {
     // Asegurar visibilidad de la card mutualista en home
     const cardMut = document.getElementById('inicio-mutualista-card');
@@ -668,6 +671,7 @@ onAuthStateChanged(auth, async (user) => {
       loadDirectory().catch(e => console.error('loadDirectory ERROR:', e)),
       loadComunicados().catch(e => console.error('loadComunicados ERROR:', e))
     ]).then(() => { if (window.notifRefreshBadge) window.notifRefreshBadge(); });
+    if (window.asisProcesarURLPendiente) window.asisProcesarURLPendiente(); // QR escaneado con la cámara del teléfono
     initPushNotifications(user.uid);
   } catch(e) {
     console.error('Auth error:', e);
@@ -6301,6 +6305,565 @@ function votBtnEliminarHTML(id) {
     ? `<button onclick="votEliminarVotacion('${id}')" style="width:100%;margin-top:10px;background:none;color:#C0392B;border:1.5px solid rgba(192,57,43,0.35);border-radius:12px;padding:12px;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;cursor:pointer;">🗑️ Eliminar votación</button>`
     : '';
 }
+
+// ════════════════════════════════════════════════════
+//  PASE DE LISTA DIGITAL — juntas de directiva y asambleas
+//  Gestionan: Presidente / Secretario / Tesorero (+ admin/subadmin) = votEsLider()
+//  (mismo permiso que firestore.rules → esLiderVotacion()).
+//  asistencias/{id}: datos de la reunión + convocados (foto de la lista al abrir)
+//  asistencias/{id}/registros/{uid}: marca de cada asistente (manual o por QR)
+//  Auto-registro del socio: QR / código de 6 dígitos que el celular del líder
+//  rota cada 30 s (codigo + codigoPrev en el doc; las rules lo validan).
+// ════════════════════════════════════════════════════
+const ASIS_ORDEN = ['Presidente','Past Presidente','Vicepresidente','Segundo Vicepresidente','Secretario','Tesorero','Domador','Retorcedor','Vocal dos años','Vocal un año'];
+const ASIS_ETIQ = { 'Vicepresidente':'Primer Vicepresidente', 'Vocal dos años':'Vocal por dos años', 'Vocal un año':'Vocal por un año' };
+const ASIS_ROTACION_MS = 30000;
+let _asisCache = [], _asisDetId = null, _asisDet = null, _asisRegs = {}, _asisDetUnsub = null, _asisRegsUnsub = null;
+let _asisQRTimer = null, _asisQRCuenta = null, _asisQRObj = null, _asisFiltro = '';
+let _asisPendientes = [], _asisScanStream = null, _asisScanLoop = null;
+
+function asisPeriodo(fechaISO) {
+  const d = fechaISO ? new Date(fechaISO + 'T12:00:00') : new Date();
+  const ini = d.getMonth() >= 6 ? d.getFullYear() : d.getFullYear() - 1;
+  return `${ini}-${ini + 1}`;
+}
+function asisHoyISO() { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; }
+function asisHoraAhora() { const d = new Date(); return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`; }
+function asisFechaLarga(iso) {
+  if (!iso) return '';
+  const d = new Date(iso + 'T12:00:00');
+  return d.toLocaleDateString('es-MX', { day:'numeric', month:'long', year:'numeric' });
+}
+function asisTipoLabel(t) { return t === 'asamblea' ? 'Asamblea de socios' : 'Junta de Directiva'; }
+function asisEtiq(c) { return ASIS_ETIQ[c] || c; }
+function asisNombre(m) { return `${m.nombre || ''} ${m.apellido || ''}`.trim() || 'Sin nombre'; }
+
+// Construye la lista de convocados según el tipo de reunión
+function asisConstruirConvocados(tipo, usuarios) {
+  const vivos = (usuarios || []).filter(m => m.estado !== 'baja' && m.migrado !== true && (m.rol || '') !== 'pendiente');
+  if (tipo === 'directiva') {
+    const rank = c => { const i = ASIS_ORDEN.indexOf(c); return i < 0 ? 999 : i; };
+    return vivos
+      .map(m => {
+        const cargos = (Array.isArray(m.cargos) ? m.cargos : []).filter(c => ASIS_ORDEN.includes(c)).sort((a,b) => rank(a) - rank(b));
+        return { uid: m.uid || m.id, nombre: asisNombre(m), cargo: cargos.map(asisEtiq).join(' · '), rank: cargos.length ? rank(cargos[0]) : 999 };
+      })
+      .filter(x => x.rank < 999)
+      .sort((a,b) => (a.rank - b.rank) || a.nombre.localeCompare(b.nombre, 'es', { sensitivity:'base' }))
+      .map(({rank, ...x}) => x);
+  }
+  return vivos
+    .filter(m => m.tipo === 'socio')
+    .map(m => ({ uid: m.uid || m.id, nombre: asisNombre(m), cargo: m.numeroSocio ? `Socio #${m.numeroSocio}` : 'Socio' }))
+    .sort((a,b) => a.nombre.localeCompare(b.nombre, 'es', { sensitivity:'base' }));
+}
+
+// Quórum: mayoría de los convocados (Estatutos: Junta Directiva y plenarias, "mayoría").
+// Los invitados agregados a una junta de directiva no cuentan para el quórum.
+function asisResumen(a, regs) {
+  const base = (a.convocados || []).filter(c => !c.invitado);
+  let presentes = 0, justificados = 0, presentesInv = 0;
+  (a.convocados || []).forEach(c => {
+    const e = regs[c.uid]?.estado;
+    if (e === 'presente') { if (c.invitado) presentesInv++; else presentes++; }
+    else if (e === 'justificado' && !c.invitado) justificados++;
+  });
+  const total = base.length;
+  const requerido = Math.floor(total / 2) + 1;
+  return { presentes, justificados, ausentes: total - presentes - justificados, total, requerido, hayQuorum: presentes >= requerido, presentesInv };
+}
+
+// ── Hub / pantalla ──
+window.asisHubInit = function() {
+  const w = document.getElementById('hub-asistencia-wrap');
+  if (w) w.style.display = votEsLider() ? 'block' : 'none';
+};
+
+window.asisLoad = async function() {
+  const cont = document.getElementById('asis-lista'); if (!cont) return;
+  if (!votEsLider()) { cont.innerHTML = '<div style="text-align:center;padding:40px;color:#5C6B80;">Solo Presidente, Secretario y Tesorero pueden pasar lista.</div>'; return; }
+  try {
+    const snap = await getDocs(query(collection(db,'asistencias'), orderBy('createdAt','desc'), limit(60)));
+    _asisCache = []; snap.forEach(d => _asisCache.push({ id: d.id, ...d.data() }));
+    if (!_asisCache.length) { cont.innerHTML = '<div style="text-align:center;padding:50px 20px;color:#5C6B80;font-size:13px;">Aún no hay listas de asistencia.<br>Toca “Nueva lista” al iniciar la junta.</div>'; return; }
+    cont.innerHTML = _asisCache.map(a => {
+      const abierta = a.estado === 'abierta';
+      const r = a.resumen;
+      const pie = abierta ? '<span style="color:#1A7A4A;font-weight:700;">● Abierta</span> · toca para pasar lista'
+        : (r ? `${r.presentes} de ${r.total} presentes · ${r.hayQuorum ? '✔ Hubo quórum' : '✖ Sin quórum'}` : 'Cerrada');
+      return `<div class="vot-card" onclick="asisAbrirDetalle('${a.id}')">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;margin-bottom:6px;">
+          <div class="vot-card-ttl">${a.tipo === 'asamblea' ? '👥' : '🦁'} ${a.numero ? esc(String(a.numero)) + 'ª ' : ''}${esc(asisTipoLabel(a.tipo))}</div>
+          <span class="vot-badge ${abierta?'abierta':'cerrada'}">${abierta?'Abierta':'Cerrada'}</span>
+        </div>
+        <div style="font-size:12px;color:#5C6B80;margin-bottom:6px;">${esc(asisFechaLarga(a.fecha))} · Periodo ${esc(a.periodo||'')}</div>
+        <div style="font-size:12.5px;color:#5A6B80;">${pie}</div>
+      </div>`;
+    }).join('');
+  } catch(e) {
+    console.error('asisLoad', e);
+    cont.innerHTML = '<div style="text-align:center;padding:40px;color:#C0392B;font-size:13px;">No se pudieron cargar las listas.</div>';
+  }
+};
+
+// ── Nueva lista ──
+window.asisNvSetTipo = function(tipo) {
+  document.getElementById('asis-nv-tipo').value = tipo;
+  document.getElementById('asis-nv-tipo-directiva').classList.toggle('vot-aud-on', tipo === 'directiva');
+  document.getElementById('asis-nv-tipo-asamblea').classList.toggle('vot-aud-on', tipo === 'asamblea');
+  const periodo = asisPeriodo(document.getElementById('asis-nv-fecha').value);
+  const n = _asisCache.filter(a => a.tipo === tipo && a.periodo === periodo).length + 1;
+  document.getElementById('asis-nv-numero').value = n;
+  document.getElementById('asis-nv-nota').innerHTML = tipo === 'directiva'
+    ? 'La lista se arma con los socios que tienen cargo en la mesa directiva. Puedes agregar socios invitados después.'
+    : 'La lista incluye a todos los socios activos. El quórum es la mayoría de ellos.';
+};
+window.asisAbrirNueva = function() {
+  if (!votEsLider()) { showToast('No tienes permiso', 'error'); return; }
+  document.getElementById('asis-nv-fecha').value = asisHoyISO();
+  document.getElementById('asis-nv-hora').value = asisHoraAhora();
+  asisNvSetTipo('directiva');
+  document.getElementById('modal-asis-nueva').style.display = 'flex';
+};
+window.asisCerrarNueva = function() { document.getElementById('modal-asis-nueva').style.display = 'none'; };
+
+window.asisCrear = async function() {
+  if (!votEsLider()) { showToast('No tienes permiso', 'error'); return; }
+  const tipo = document.getElementById('asis-nv-tipo').value;
+  const fecha = document.getElementById('asis-nv-fecha').value || asisHoyISO();
+  const horaInicio = document.getElementById('asis-nv-hora').value || asisHoraAhora();
+  const numero = parseInt(document.getElementById('asis-nv-numero').value, 10) || null;
+  const btn = document.getElementById('asis-nv-save');
+  btn.disabled = true; btn.textContent = 'Preparando lista…';
+  try {
+    const usuarios = await getCollectionCached('usuarios', 30000, true);
+    const convocados = asisConstruirConvocados(tipo, usuarios);
+    if (!convocados.length) { showToast(tipo === 'directiva' ? 'No hay socios con cargo de directiva' : 'No hay socios activos', 'error'); return; }
+    const u = window.currentUser;
+    const ref = await addDoc(collection(db,'asistencias'), {
+      tipo, numero, fecha, periodo: asisPeriodo(fecha), horaInicio, horaFin: null,
+      estado: 'abierta', convocados, convocadosUIDs: convocados.map(c => c.uid),
+      codigo: null, codigoPrev: null,
+      creadaPorUID: u.uid, creadaPorNombre: asisNombre(u),
+      createdAt: Timestamp.now(), closedAt: null
+    });
+    logAuditoria('crear_lista_asistencia', { asistenciaId: ref.id, tipo, numero, fecha, convocados: convocados.length });
+    asisCerrarNueva();
+    showToast('Pase de lista abierto ✓', 'success');
+    asisLoad();
+    asisAbrirDetalle(ref.id);
+  } catch(e) {
+    console.error('asisCrear', e); showToast('No se pudo crear: ' + (e.message || e), 'error');
+  } finally { btn.disabled = false; btn.textContent = 'Abrir pase de lista →'; }
+};
+
+// ── Detalle (pase de lista en vivo) ──
+window.asisAbrirDetalle = function(id) {
+  asisCerrarDetalle();
+  _asisDetId = id; _asisDet = null; _asisRegs = {}; _asisFiltro = '';
+  document.getElementById('asis-det-body').innerHTML = '<div style="text-align:center;padding:40px;color:#5C6B80;">Cargando…</div>';
+  document.getElementById('modal-asis-detalle').style.display = 'flex';
+  _asisDetUnsub = onSnapshot(doc(db,'asistencias',id), ds => {
+    if (!ds.exists()) { asisCerrarDetalle(); return; }
+    _asisDet = { id, ...ds.data() }; asisRenderDetalle();
+  }, err => console.error('asis det', err));
+  _asisRegsUnsub = onSnapshot(collection(db,'asistencias',id,'registros'), vs => {
+    _asisRegs = {}; vs.forEach(x => { _asisRegs[x.id] = x.data(); });
+    asisRenderDetalle(); asisQRActualizarPresentes();
+  }, err => console.error('asis regs', err));
+};
+window.asisCerrarDetalle = function() {
+  if (_asisDetUnsub) { _asisDetUnsub(); _asisDetUnsub = null; }
+  if (_asisRegsUnsub) { _asisRegsUnsub(); _asisRegsUnsub = null; }
+  _asisDetId = null; _asisDet = null;
+  const m = document.getElementById('modal-asis-detalle'); if (m) m.style.display = 'none';
+};
+window.asisFiltrar = function(v) {
+  _asisFiltro = (v || '').trim().toLowerCase();
+  asisRenderFilas();
+};
+
+function asisRenderFilas() {
+  const cont = document.getElementById('asis-det-filas'); const a = _asisDet;
+  if (!cont || !a) return;
+  const q = _asisFiltro;
+  const arr = (a.convocados || []).map((c, i) => ({ c, i })).filter(({c}) => !q || c.nombre.toLowerCase().includes(q) || (c.cargo||'').toLowerCase().includes(q));
+  if (!arr.length) { cont.innerHTML = '<div style="text-align:center;padding:20px;color:#5C6B80;font-size:13px;">Sin coincidencias.</div>'; return; }
+  cont.innerHTML = arr.map(({c, i}) => {
+    const r = _asisRegs[c.uid] || {};
+    const e = r.estado || 'ausente';
+    const hora = r.ts?.seconds ? new Date(r.ts.seconds * 1000).toLocaleTimeString('es-MX', { hour:'2-digit', minute:'2-digit' }) : '';
+    const sub = e === 'presente' ? `<span style="color:#1A7A4A;font-weight:700;">Presente${hora ? ' · ' + hora : ''}${r.via === 'qr' ? ' · 📱' : ''}</span>`
+      : e === 'justificado' ? '<span style="color:#B7791F;font-weight:700;">Justificado</span>'
+      : '<span style="color:#8A9BB0;">Sin registrar</span>';
+    const bP = `background:${e==='presente'?'#1A7A4A':'#fff'};color:${e==='presente'?'#fff':'#1A7A4A'};border:2px solid #1A7A4A;`;
+    const bJ = `background:${e==='justificado'?'#C9973A':'#fff'};color:${e==='justificado'?'#fff':'#B7791F'};border:2px solid #C9973A;`;
+    return `<div style="display:flex;align-items:center;gap:10px;padding:10px 4px;border-bottom:1px solid #F0EBE2;">
+      <div style="width:22px;font-size:11px;color:#8A9BB0;text-align:right;flex-shrink:0;">${i + 1}</div>
+      <div style="flex:1;min-width:0;">
+        <div style="font-weight:700;color:#0D1B2A;font-size:14px;">${esc(c.nombre)}</div>
+        <div style="font-size:11.5px;color:#8A6D2F;">${esc(c.cargo || '')}${c.invitado ? ' · invitado' : ''}</div>
+        <div style="font-size:11.5px;margin-top:1px;">${sub}</div>
+      </div>
+      <button onclick="asisMarcar('${jsAttrEsc(c.uid)}','presente')" aria-label="Presente" style="${bP}width:46px;height:42px;border-radius:10px;font-size:18px;font-weight:800;cursor:pointer;flex-shrink:0;">✓</button>
+      <button onclick="asisMarcar('${jsAttrEsc(c.uid)}','justificado')" aria-label="Justificado" style="${bJ}width:46px;height:42px;border-radius:10px;font-size:14px;font-weight:800;cursor:pointer;flex-shrink:0;">J</button>
+    </div>`;
+  }).join('');
+}
+
+function asisRenderDetalle() {
+  const cont = document.getElementById('asis-det-body'); const a = _asisDet;
+  if (!cont || !a) return;
+  const abierta = a.estado === 'abierta';
+  const r = asisResumen(a, _asisRegs);
+  const buscador = document.getElementById('asis-det-buscar');
+  // Si el buscador ya existe solo refrescamos números y filas (no perder foco/texto)
+  if (buscador && cont.dataset.id === a.id && cont.dataset.estado === a.estado) {
+    const k = document.getElementById('asis-det-kpis'); if (k) k.innerHTML = asisKpisHTML(r);
+    asisRenderFilas(); return;
+  }
+  cont.dataset.id = a.id; cont.dataset.estado = a.estado;
+  const btn = (txt, fn, estilo) => `<button onclick="${fn}" style="flex:1;padding:12px 8px;border-radius:12px;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:800;cursor:pointer;${estilo}">${txt}</button>`;
+  const navy = 'background:linear-gradient(135deg,#0D1B2A,#1A2E42);color:#E8B84B;border:none;';
+  const claro = 'background:#fff;color:#0D1B2A;border:1.5px solid #E8E0D4;';
+  cont.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;">
+      <div>
+        <div class="modal-title" style="text-align:left;margin:0;">${a.numero ? esc(String(a.numero)) + 'ª ' : ''}${esc(asisTipoLabel(a.tipo))}</div>
+        <div style="font-size:12.5px;color:#5C6B80;margin-top:2px;">${esc(asisFechaLarga(a.fecha))} · Inicio ${esc(a.horaInicio||'—')}${a.horaFin ? ' · Concluyó ' + esc(a.horaFin) : ''}</div>
+      </div>
+      <button onclick="asisCerrarDetalle()" style="background:none;border:none;font-size:24px;color:#5C6B80;cursor:pointer;line-height:1;">×</button>
+    </div>
+    <div style="margin:6px 0 10px;"><span class="vot-badge ${abierta?'abierta':'cerrada'}">${abierta?'Abierta':'Cerrada'}</span></div>
+    <div id="asis-det-kpis">${asisKpisHTML(r)}</div>
+    ${abierta ? `<div style="display:flex;gap:8px;margin:12px 0 6px;">${btn('📱 Mostrar QR','asisMostrarQR()',navy)}${btn('＋ Invitado','asisAgregarInvitado()',claro)}</div>`
+      : `<div style="font-size:12px;color:#8A6D2F;background:rgba(201,151,58,0.1);border-radius:10px;padding:8px 10px;margin:12px 0 6px;">Lista cerrada. Aún puedes corregir marcas si hace falta.</div>`}
+    <input id="asis-det-buscar" class="form-input" placeholder="🔍 Buscar nombre o cargo" oninput="asisFiltrar(this.value)" style="margin:6px 0 4px;">
+    <div style="font-size:11px;color:#8A9BB0;margin-bottom:2px;">✓ = presente · J = justificado · toca de nuevo para quitar</div>
+    <div id="asis-det-filas"></div>
+    <div style="display:flex;gap:8px;margin-top:16px;">
+      ${btn('🖨 Imprimir / PDF','asisImprimir()',claro)}
+      ${abierta ? btn('⏹ Concluir junta','asisConcluir()',navy) : btn('↩️ Reabrir','asisReabrir()',claro)}
+    </div>
+    <button onclick="asisEliminar()" style="width:100%;margin-top:10px;background:none;color:#C0392B;border:1.5px solid rgba(192,57,43,0.35);border-radius:12px;padding:11px;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:700;cursor:pointer;">🗑️ Eliminar lista</button>`;
+  asisRenderFilas();
+}
+function asisKpisHTML(r) {
+  return `<div style="display:flex;gap:8px;text-align:center;">
+      <div style="flex:1;background:rgba(26,122,74,0.08);border-radius:10px;padding:10px;"><div style="font-size:22px;font-weight:800;color:#1A7A4A;">${r.presentes}<span style="font-size:13px;color:#5C6B80;">/${r.total}</span></div><div style="font-size:11px;color:#1A7A4A;">Presentes</div></div>
+      <div style="flex:1;background:rgba(201,151,58,0.1);border-radius:10px;padding:10px;"><div style="font-size:22px;font-weight:800;color:#B7791F;">${r.justificados}</div><div style="font-size:11px;color:#B7791F;">Justificados</div></div>
+      <div style="flex:1.3;background:${r.hayQuorum?'rgba(26,122,74,0.12)':'rgba(192,57,43,0.08)'};border-radius:10px;padding:10px;"><div style="font-size:15px;font-weight:800;color:${r.hayQuorum?'#1A7A4A':'#C0392B'};margin-top:4px;">${r.hayQuorum?'✔ Hay quórum':'✖ Sin quórum'}</div><div style="font-size:11px;color:#5C6B80;">se requieren ${r.requerido}</div></div>
+    </div>${r.presentesInv ? `<div style="font-size:11.5px;color:#5C6B80;text-align:center;margin-top:6px;">+ ${r.presentesInv} invitado${r.presentesInv!==1?'s':''} presente${r.presentesInv!==1?'s':''}</div>` : ''}`;
+}
+
+window.asisMarcar = async function(uid, estado) {
+  if (!votEsLider() || !_asisDet) return;
+  const actual = _asisRegs[uid]?.estado;
+  const ref = doc(db,'asistencias',_asisDet.id,'registros',uid);
+  const c = (_asisDet.convocados || []).find(x => x.uid === uid) || {};
+  try {
+    if (actual === estado) await deleteDoc(ref);   // tocar la marca activa la quita
+    else await setDoc(ref, { estado, via: 'manual', porUID: window.currentUser.uid, nombre: c.nombre || '', ts: Timestamp.now() });
+  } catch(e) { console.error('asisMarcar', e); showToast('No se pudo guardar: ' + (e.message || e), 'error'); }
+};
+
+window.asisAgregarInvitado = async function() {
+  if (!_asisDet) return;
+  const q = (prompt('Nombre o número de socio del invitado:') || '').trim().toLowerCase();
+  if (!q) return;
+  try {
+    const usuarios = await getCollectionCached('usuarios', 30000);
+    const ya = new Set(_asisDet.convocadosUIDs || []);
+    const hits = usuarios.filter(m => !ya.has(m.id) && m.estado !== 'baja' && m.migrado !== true && (m.rol||'') !== 'pendiente'
+      && (asisNombre(m).toLowerCase().includes(q) || String(m.numeroSocio || '') === q));
+    if (!hits.length) { showToast('No se encontró ese socio (o ya está en la lista)', 'error'); return; }
+    let m = hits[0];
+    if (hits.length > 1) {
+      const opciones = hits.slice(0, 9).map((h, i) => `${i + 1}. ${asisNombre(h)}${h.numeroSocio ? ' #' + h.numeroSocio : ''}`).join('\n');
+      const n = parseInt(prompt(`Hay varios, escribe el número:\n${opciones}`) || '', 10);
+      if (!n || !hits[n - 1]) return;
+      m = hits[n - 1];
+    }
+    const inv = { uid: m.id, nombre: asisNombre(m), cargo: 'Socio', invitado: true };
+    await updateDoc(doc(db,'asistencias',_asisDet.id), {
+      convocados: [...(_asisDet.convocados || []), inv],
+      convocadosUIDs: [...(_asisDet.convocadosUIDs || []), m.id]
+    });
+    showToast(`${inv.nombre} agregado ✓`, 'success');
+  } catch(e) { console.error('asisAgregarInvitado', e); showToast('No se pudo agregar: ' + (e.message || e), 'error'); }
+};
+
+window.asisConcluir = async function() {
+  if (!_asisDet) return;
+  const horaFin = prompt('Hora en que concluyó la junta (HH:MM):', asisHoraAhora());
+  if (horaFin === null) return;
+  const r = asisResumen(_asisDet, _asisRegs);
+  try {
+    await updateDoc(doc(db,'asistencias',_asisDet.id), {
+      estado: 'cerrada', horaFin: horaFin.trim() || asisHoraAhora(), closedAt: Timestamp.now(),
+      codigo: null, codigoPrev: null, resumen: r
+    });
+    logAuditoria('cerrar_lista_asistencia', { asistenciaId: _asisDet.id, ...r });
+    showToast('Junta concluida ✓', 'success');
+    asisLoad();
+  } catch(e) { console.error('asisConcluir', e); showToast('No se pudo concluir: ' + (e.message || e), 'error'); }
+};
+window.asisReabrir = async function() {
+  if (!_asisDet || !confirm('¿Reabrir el pase de lista?')) return;
+  try { await updateDoc(doc(db,'asistencias',_asisDet.id), { estado: 'abierta', closedAt: null }); asisLoad(); }
+  catch(e) { showToast('No se pudo reabrir: ' + (e.message || e), 'error'); }
+};
+window.asisEliminar = async function() {
+  const a = _asisDet; if (!a) return;
+  if (!confirm(`¿Eliminar la lista de ${asisTipoLabel(a.tipo)} del ${asisFechaLarga(a.fecha)}?\n\nSe borrarán todas sus marcas de asistencia. No se puede deshacer.`)) return;
+  try {
+    const regs = await getDocs(collection(db,'asistencias',a.id,'registros'));
+    await Promise.all(regs.docs.map(d => deleteDoc(d.ref)));
+    await deleteDoc(doc(db,'asistencias',a.id));
+    logAuditoria('eliminar_lista_asistencia', { asistenciaId: a.id, tipo: a.tipo, fecha: a.fecha, numero: a.numero || null });
+    asisCerrarDetalle();
+    showToast('Lista eliminada', 'success');
+    asisLoad();
+  } catch(e) { console.error('asisEliminar', e); showToast('No se pudo eliminar: ' + (e.message || e), 'error'); }
+};
+
+// ── QR con código rotativo (celular del líder) ──
+function asisCargarScript(src, globalName) {
+  if (window[globalName]) return Promise.resolve();
+  return new Promise((res, rej) => {
+    const s = document.createElement('script');
+    s.src = src; s.async = true; s.onload = () => res(); s.onerror = () => rej(new Error('No se pudo cargar ' + globalName));
+    document.head.appendChild(s);
+  });
+}
+function asisNuevoCodigo() {
+  const arr = new Uint32Array(1); crypto.getRandomValues(arr);
+  return String(arr[0] % 1000000).padStart(6, '0');
+}
+async function asisRotarCodigo() {
+  const a = _asisDet; if (!a) return;
+  const nuevo = asisNuevoCodigo();
+  try {
+    await updateDoc(doc(db,'asistencias',a.id), { codigo: nuevo, codigoPrev: a.codigo || null });
+  } catch(e) { console.error('asisRotarCodigo', e); return; }
+  const url = `${location.origin}/?asis=${encodeURIComponent(a.id)}&c=${nuevo}`;
+  const box = document.getElementById('asis-qr-canvas');
+  if (box && window.QRCode) {
+    box.innerHTML = '';
+    _asisQRObj = new QRCode(box, { text: url, width: 260, height: 260, correctLevel: QRCode.CorrectLevel.M });
+  }
+  const cod = document.getElementById('asis-qr-codigo'); if (cod) cod.textContent = nuevo.slice(0,3) + ' ' + nuevo.slice(3);
+  let seg = ASIS_ROTACION_MS / 1000;
+  const cta = document.getElementById('asis-qr-cuenta');
+  if (_asisQRCuenta) clearInterval(_asisQRCuenta);
+  if (cta) cta.textContent = `cambia en ${seg} s`;
+  _asisQRCuenta = setInterval(() => { seg--; if (cta) cta.textContent = `cambia en ${Math.max(seg,0)} s`; }, 1000);
+}
+function asisQRActualizarPresentes() {
+  const el = document.getElementById('asis-qr-presentes');
+  if (el && _asisDet) { const r = asisResumen(_asisDet, _asisRegs); el.textContent = `${r.presentes} de ${r.total} presentes · ${r.hayQuorum ? 'hay quórum' : 'faltan ' + (r.requerido - r.presentes) + ' para quórum'}`; }
+}
+window.asisMostrarQR = async function() {
+  if (!_asisDet) return;
+  try { await asisCargarScript('https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js', 'QRCode'); }
+  catch(e) { showToast('No se pudo cargar el generador de QR. Revisa tu conexión.', 'error'); return; }
+  document.getElementById('asis-qr-titulo').textContent = `${_asisDet.numero ? _asisDet.numero + 'ª ' : ''}${asisTipoLabel(_asisDet.tipo)} · ${asisFechaLarga(_asisDet.fecha)}`;
+  document.getElementById('modal-asis-qr').style.display = 'flex';
+  asisQRActualizarPresentes();
+  try { if (navigator.wakeLock) window._asisWake = await navigator.wakeLock.request('screen'); } catch(_) {}
+  await asisRotarCodigo();
+  if (_asisQRTimer) clearInterval(_asisQRTimer);
+  _asisQRTimer = setInterval(asisRotarCodigo, ASIS_ROTACION_MS);
+};
+window.asisCerrarQR = async function() {
+  if (_asisQRTimer) { clearInterval(_asisQRTimer); _asisQRTimer = null; }
+  if (_asisQRCuenta) { clearInterval(_asisQRCuenta); _asisQRCuenta = null; }
+  try { window._asisWake?.release(); } catch(_) {}
+  document.getElementById('modal-asis-qr').style.display = 'none';
+  if (_asisDet) { try { await updateDoc(doc(db,'asistencias',_asisDet.id), { codigo: null, codigoPrev: null }); } catch(_) {} }
+};
+
+// ── Auto-registro del socio (Inicio) ──
+window.asisCheckAbiertas = async function() {
+  const u = window.currentUser; const banner = document.getElementById('inicio-asis-banner');
+  if (!u || !banner || u.rol === 'pendiente') return;
+  try {
+    const snap = await getDocs(query(collection(db,'asistencias'), where('estado','==','abierta'), limit(10)));
+    const mias = []; snap.forEach(d => { const a = d.data(); if ((a.convocadosUIDs || []).includes(u.uid)) mias.push({ id: d.id, ...a }); });
+    const regs = await Promise.all(mias.map(a => getDoc(doc(db,'asistencias',a.id,'registros',u.uid)).catch(() => null)));
+    _asisPendientes = mias.filter((a, i) => !(regs[i] && regs[i].exists() && regs[i].data().estado === 'presente'));
+    banner.style.display = _asisPendientes.length ? 'flex' : 'none';
+    const sub = document.getElementById('inicio-asis-banner-sub');
+    if (sub && _asisPendientes[0]) sub.textContent = `${asisTipoLabel(_asisPendientes[0].tipo)} · toca para registrar tu asistencia`;
+  } catch(e) { console.warn('asisCheckAbiertas', e); }
+};
+
+window.asisAbrirRegistro = function(prefCodigo, prefId) {
+  const body = document.getElementById('asis-reg-body'); if (!body) return;
+  const a = (prefId && _asisPendientes.find(x => x.id === prefId)) || _asisPendientes[0];
+  body.innerHTML = `
+    ${a ? `<div style="text-align:center;font-size:13px;color:#5C6B80;margin-bottom:14px;">${esc(asisTipoLabel(a.tipo))} · ${esc(asisFechaLarga(a.fecha))}</div>` : ''}
+    <button onclick="asisEscanear()" style="width:100%;padding:16px;background:linear-gradient(135deg,#0D1B2A,#1A2E42);color:#E8B84B;border:none;border-radius:14px;font-family:'DM Sans',sans-serif;font-size:16px;font-weight:800;cursor:pointer;">📷 Escanear QR</button>
+    <div id="asis-scan-wrap" style="display:none;margin-top:12px;position:relative;border-radius:14px;overflow:hidden;background:#000;">
+      <video id="asis-scan-video" playsinline muted style="width:100%;display:block;"></video>
+    </div>
+    <div style="text-align:center;color:#8A9BB0;font-size:12px;margin:14px 0 6px;">— o escribe el código que muestra el secretario —</div>
+    <input id="asis-reg-codigo" class="form-input" inputmode="numeric" maxlength="7" placeholder="000 000" value="${esc(prefCodigo || '')}" style="text-align:center;font-size:26px;letter-spacing:6px;font-weight:800;">
+    <button id="asis-reg-btn" onclick="asisRegistrarme()" class="btn-primary" style="width:100%;margin-top:12px;">Registrar asistencia →</button>
+    <button onclick="asisCerrarRegistro()" style="width:100%;margin-top:6px;background:none;border:none;color:#5C6B80;font-size:14px;cursor:pointer;padding:10px;">Cancelar</button>`;
+  window._asisRegId = a ? a.id : (prefId || null);
+  document.getElementById('modal-asis-registro').style.display = 'flex';
+};
+window.asisCerrarRegistro = function() {
+  asisDetenerScan();
+  document.getElementById('modal-asis-registro').style.display = 'none';
+};
+
+// Registra al socio con el código (de QR o tecleado). Si hay varias listas abiertas,
+// prueba en cada una donde está convocado: las rules solo aceptan el código vigente.
+window.asisRegistrarme = async function(codigoQR, idQR) {
+  const u = window.currentUser; if (!u) return;
+  const codigo = String(codigoQR || document.getElementById('asis-reg-codigo')?.value || '').replace(/\D/g, '');
+  if (codigo.length !== 6) { showToast('El código tiene 6 dígitos', 'error'); return; }
+  const btn = document.getElementById('asis-reg-btn'); if (btn) { btn.disabled = true; btn.textContent = 'Registrando…'; }
+  const candidatos = idQR ? [idQR] : (_asisPendientes.length ? _asisPendientes.map(a => a.id) : (window._asisRegId ? [window._asisRegId] : []));
+  let ok = false;
+  for (const id of candidatos) {
+    try {
+      await setDoc(doc(db,'asistencias',id,'registros',u.uid), { estado: 'presente', via: 'qr', codigo, nombre: asisNombre(u), ts: Timestamp.now() });
+      ok = true; break;
+    } catch(_) { /* código no vigente para esta lista o no convocado */ }
+  }
+  if (btn) { btn.disabled = false; btn.textContent = 'Registrar asistencia →'; }
+  if (ok) {
+    asisCerrarRegistro();
+    showToast('✓ Asistencia registrada', 'success');
+    asisCheckAbiertas();
+  } else {
+    showToast('Código vencido o no válido. Pide el código actual al secretario.', 'error');
+  }
+};
+
+function asisDetenerScan() {
+  if (_asisScanLoop) { cancelAnimationFrame(_asisScanLoop); _asisScanLoop = null; }
+  if (_asisScanStream) { _asisScanStream.getTracks().forEach(t => t.stop()); _asisScanStream = null; }
+  const w = document.getElementById('asis-scan-wrap'); if (w) w.style.display = 'none';
+}
+function asisProcesarTextoQR(txt) {
+  try {
+    const url = new URL(txt);
+    const id = url.searchParams.get('asis'), c = url.searchParams.get('c');
+    if (id && c) { asisDetenerScan(); asisRegistrarme(c, id); return true; }
+  } catch(_) {}
+  return false;
+}
+window.asisEscanear = async function() {
+  if (!navigator.mediaDevices?.getUserMedia) { showToast('Tu celular no permite usar la cámara aquí. Escribe el código.', 'error'); return; }
+  const usarNativo = 'BarcodeDetector' in window;
+  if (!usarNativo) {
+    try { await asisCargarScript('https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js', 'jsQR'); }
+    catch(e) { showToast('No se pudo cargar el lector de QR. Escribe el código.', 'error'); return; }
+  }
+  try {
+    _asisScanStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+  } catch(e) { showToast('Permite el acceso a la cámara o escribe el código.', 'error'); return; }
+  const video = document.getElementById('asis-scan-video');
+  document.getElementById('asis-scan-wrap').style.display = 'block';
+  video.srcObject = _asisScanStream; await video.play().catch(() => {});
+  const detector = usarNativo ? new BarcodeDetector({ formats: ['qr_code'] }) : null;
+  const canvas = document.createElement('canvas'); const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  let ocupado = false;
+  const tick = async () => {
+    if (!_asisScanStream) return;
+    if (!ocupado && video.readyState >= 2) {
+      ocupado = true;
+      try {
+        if (detector) {
+          const codes = await detector.detect(video);
+          if (codes[0] && asisProcesarTextoQR(codes[0].rawValue)) return;
+        } else {
+          canvas.width = video.videoWidth; canvas.height = video.videoHeight;
+          ctx.drawImage(video, 0, 0);
+          const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+          const res = window.jsQR(img.data, img.width, img.height, { inversionAttempts: 'dontInvert' });
+          if (res && asisProcesarTextoQR(res.data)) return;
+        }
+      } catch(_) {}
+      ocupado = false;
+    }
+    _asisScanLoop = requestAnimationFrame(tick);
+  };
+  _asisScanLoop = requestAnimationFrame(tick);
+};
+
+// QR escaneado con la cámara del teléfono (abre la app con ?asis=…&c=…)
+(function asisCapturarURL() {
+  try {
+    const p = new URLSearchParams(location.search);
+    if (p.get('asis') && p.get('c')) {
+      sessionStorage.setItem('asisPendienteURL', JSON.stringify({ id: p.get('asis'), c: p.get('c') }));
+      history.replaceState(null, '', location.pathname);
+    }
+  } catch(_) {}
+})();
+window.asisProcesarURLPendiente = function() {
+  try {
+    const raw = sessionStorage.getItem('asisPendienteURL'); if (!raw) return;
+    sessionStorage.removeItem('asisPendienteURL');
+    const { id, c } = JSON.parse(raw);
+    asisRegistrarme(c, id);
+  } catch(_) {}
+};
+
+// ── Impresión / PDF (marco interno; funciona en la PWA del celular) ──
+window.asisImprimir = function() {
+  const a = _asisDet; if (!a) return;
+  const frame = document.getElementById('mi-recibo-print-frame'); if (!frame) return;
+  const r = asisResumen(a, _asisRegs);
+  const d = a.fecha ? new Date(a.fecha + 'T12:00:00') : new Date();
+  const [pIni, pFin] = String(a.periodo || '').split('-');
+  const titulo = a.tipo === 'asamblea' ? 'ASISTENCIA A ASAMBLEA DE SOCIOS' : 'ASISTENCIA A JUNTA DE MESA DIRECTIVA';
+  const junta = a.tipo === 'asamblea' ? 'ASAMBLEA' : 'JUNTA DE MESA DIRECTIVA';
+  const filas = (a.convocados || []).map((c, i) => {
+    const g = _asisRegs[c.uid] || {};
+    const hora = g.ts?.seconds ? new Date(g.ts.seconds * 1000).toLocaleTimeString('es-MX', { hour:'2-digit', minute:'2-digit' }) : '';
+    const marca = g.estado === 'presente' ? `✓ Presente${hora ? ' · ' + hora : ''}${g.via === 'qr' ? ' (QR)' : ''}` : g.estado === 'justificado' ? 'Justificado' : '—';
+    return `<tr><td class="idx">${i + 1}</td><td><div class="n">${esc(c.nombre)}</div><div class="c">${esc(c.cargo || '')}${c.invitado ? ' · Invitado' : ''}</div></td><td class="m ${g.estado || 'ausente'}">${esc(marca)}</td></tr>`;
+  }).join('');
+  const css = `<style>
+    #mi-recibo-print-frame .asp{font-family:'DM Sans',Arial,sans-serif;color:#0D1B2A;font-size:11.5px;padding:10mm 12mm;}
+    #mi-recibo-print-frame .asp h1{font-family:'Playfair Display',serif;font-size:18px;text-align:center;margin:0 0 3px;}
+    #mi-recibo-print-frame .asp .t2{text-align:center;font-weight:700;font-size:13px;letter-spacing:1px;margin-bottom:8px;}
+    #mi-recibo-print-frame .asp .enc{text-align:center;font-size:12.5px;margin-bottom:3px;}
+    #mi-recibo-print-frame .asp .fx{font-weight:700;}
+    #mi-recibo-print-frame .asp .acta{text-align:right;font-weight:700;margin:4px 0 8px;}
+    #mi-recibo-print-frame .asp table{width:100%;border-collapse:collapse;}
+    #mi-recibo-print-frame .asp th{background:#0D1B2A;color:#fff;text-align:left;padding:7px 9px;font-size:10.5px;-webkit-print-color-adjust:exact;print-color-adjust:exact;}
+    #mi-recibo-print-frame .asp td{border-bottom:1px solid #D8D2C6;padding:6px 9px;vertical-align:middle;}
+    #mi-recibo-print-frame .asp tr{break-inside:avoid;}
+    #mi-recibo-print-frame .asp .idx{width:32px;text-align:center;color:#5C6B80;}
+    #mi-recibo-print-frame .asp .n{font-weight:700;text-transform:uppercase;font-size:11.5px;}
+    #mi-recibo-print-frame .asp .c{color:#A0742A;font-weight:700;font-size:10px;text-transform:uppercase;letter-spacing:.5px;}
+    #mi-recibo-print-frame .asp .m{width:150px;font-weight:700;}
+    #mi-recibo-print-frame .asp .m.presente{color:#1A7A4A;} #mi-recibo-print-frame .asp .m.justificado{color:#B7791F;} #mi-recibo-print-frame .asp .m.ausente{color:#8A9BB0;}
+    #mi-recibo-print-frame .asp .res{margin-top:10px;font-size:12px;font-weight:700;}
+    #mi-recibo-print-frame .asp .pie{margin-top:6px;font-size:9.5px;color:#5C6B80;text-align:right;}
+    @page{size:letter portrait;margin:0;}
+  </style>`;
+  frame.innerHTML = css + `<div class="asp">
+    <h1>CLUB DE LEONES DE VERACRUZ, A.C.</h1>
+    <div class="t2">${titulo}</div>
+    <div class="enc"><span class="fx">${a.numero ? esc(String(a.numero)) + 'ª' : '____'}</span> ${junta} <span class="fx">${esc(pIni || '')} – ${esc(pFin || '')}</span></div>
+    <div class="enc">EL DÍA <span class="fx">${d.getDate()}</span> DEL MES <span class="fx">${esc(MESES_ORD[d.getMonth()])}</span> DEL <span class="fx">${d.getFullYear()}</span></div>
+    <div class="enc">INICIO: <span class="fx">${esc(a.horaInicio || '____')}</span> HORAS &nbsp;&nbsp;&nbsp; CONCLUYÓ: <span class="fx">${esc(a.horaFin || '____')}</span> HORAS</div>
+    <div class="acta">ACTA ${a.numero ? esc(String(a.numero)) : '____'}</div>
+    <table><thead><tr><th class="idx">No.</th><th>Nombre</th><th>Asistencia</th></tr></thead><tbody>${filas}</tbody></table>
+    <div class="res">Presentes: ${r.presentes} de ${r.total} · Justificados: ${r.justificados} · Ausentes: ${r.ausentes}${r.presentesInv ? ` · Invitados presentes: ${r.presentesInv}` : ''} · ${r.hayQuorum ? 'HUBO QUÓRUM LEGAL' : 'NO HUBO QUÓRUM'} (se requieren ${r.requerido})</div>
+    <div class="pie">Pase de lista digital · Generado por el sistema el ${new Date().toLocaleDateString('es-MX', { day:'numeric', month:'long', year:'numeric' })}</div>
+  </div>`;
+  window.print();
+  setTimeout(() => { frame.innerHTML = ''; }, 3000);
+};
 
 // ── Panel de administración ──
 async function galeriaRenderAdmin(){
@@ -19563,7 +20126,7 @@ window.finCategoriaPDF = function() {
 
 // IMPORTANTE: APP_VERSION debe coincidir con "version" en version.json y con
 // VERSION en sw.js. Bumpear las 3 juntas o el banner de update queda pegado.
-const APP_VERSION = '20261008-002';
+const APP_VERSION = '20261009-001';
 
 // Referencia al SW en espera (si existe), compartida entre ambas rutas de actualización
 window._pendingSW = null;
@@ -20385,6 +20948,14 @@ body.damas-theme .filter-tab-active { background:rgba(139,74,107,0.15); color:#5
         </button>
         <div class="notif-bell-label">Notificaciones</div>
       </div>
+    </div>
+    <div id="inicio-asis-banner" onclick="asisAbrirRegistro()" style="display:none;align-items:center;gap:12px;background:linear-gradient(135deg,#1A7A4A,#15623C);border-radius:16px;padding:14px 16px;margin-bottom:14px;cursor:pointer;box-shadow:0 4px 14px rgba(26,122,74,0.25);">
+      <div style="font-size:28px;line-height:1;">📍</div>
+      <div style="flex:1;min-width:0;">
+        <div style="color:#fff;font-weight:800;font-size:14.5px;">Pase de lista abierto</div>
+        <div id="inicio-asis-banner-sub" style="color:rgba(255,255,255,0.8);font-size:12px;">Toca para registrar tu asistencia</div>
+      </div>
+      <div style="color:#fff;font-size:20px;">›</div>
     </div>
     <div class="inicio-grid">
       <!-- Fila 1 -->
@@ -21455,6 +22026,16 @@ body.damas-theme .filter-tab-active { background:rgba(139,74,107,0.15); color:#5
         <div style="color:var(--gold-light);font-size:20px;">›</div>
       </button>
     </div>
+    <div id="hub-asistencia-wrap" style="margin-bottom:14px;display:none;">
+      <button onclick="goTo('screen-asistencia')" style="width:100%;background:linear-gradient(135deg,#0D1B2A,#1A2E42);border-radius:16px;padding:18px;border:1px solid rgba(201,151,58,0.3);display:flex;align-items:center;gap:14px;cursor:pointer;text-align:left;">
+        <div style="width:52px;height:52px;background:linear-gradient(135deg,var(--gold-light),var(--gold));border-radius:14px;display:flex;align-items:center;justify-content:center;font-size:26px;flex-shrink:0;">📋</div>
+        <div style="flex:1;">
+          <div style="font-family:'Playfair Display',serif;color:var(--white);font-size:16px;font-weight:700;margin-bottom:2px;">Pase de Lista</div>
+          <div style="color:rgba(255,255,255,0.5);font-size:12px;">Asistencia a juntas y asambleas</div>
+        </div>
+        <div style="color:var(--gold-light);font-size:20px;">›</div>
+      </button>
+    </div>
     <div>
       <button onclick="goTo('screen-actas')" style="width:100%;background:linear-gradient(135deg,#0D1B2A,#1A2E42);border-radius:16px;padding:18px;border:1px solid rgba(201,151,58,0.3);display:flex;align-items:center;gap:14px;cursor:pointer;text-align:left;">
         <div style="width:52px;height:52px;background:linear-gradient(135deg,var(--gold-light),var(--gold));border-radius:14px;display:flex;align-items:center;justify-content:center;font-size:26px;flex-shrink:0;">📖</div>
@@ -21465,6 +22046,74 @@ body.damas-theme .filter-tab-active { background:rgba(139,74,107,0.15); color:#5
         <div style="color:var(--gold-light);font-size:20px;">›</div>
       </button>
     </div>
+  </div>
+</div>
+
+<!-- ══ PASE DE LISTA DIGITAL (Presidente / Secretario / Tesorero) ══ -->
+<div id="screen-asistencia" class="screen">
+  <div class="status-bar dark"></div>
+  <div class="recursos-header">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
+      <button class="btn-inicio" onclick="goTo('screen-directiva-hub')">‹ Directiva</button>
+    </div>
+    <h1>📋 Pase de Lista</h1>
+    <p>Asistencia a juntas de directiva y asambleas</p>
+  </div>
+  <div class="recursos-body">
+    <button onclick="asisAbrirNueva()" style="width:100%;margin-bottom:14px;background:linear-gradient(135deg,#E8B84B,#C9973A);color:#0D1B2A;border:none;border-radius:14px;padding:15px;font-family:'DM Sans',sans-serif;font-size:15px;font-weight:800;cursor:pointer;">＋ Nueva lista de asistencia</button>
+    <div id="asis-lista">
+      <div style="text-align:center;padding:50px 20px;color:#5C6B80;font-size:13px;">Cargando listas…</div>
+    </div>
+  </div>
+</div>
+
+<div id="modal-asis-nueva" class="modal-overlay" onclick="if(event.target===this)asisCerrarNueva()" style="z-index:10050;align-items:center;">
+  <div class="modal-sheet">
+    <div class="modal-handle"></div>
+    <div class="modal-title">📋 Nueva lista de asistencia</div>
+    <label class="form-label">Tipo de reunión</label>
+    <div style="display:flex;gap:10px;margin-top:4px;">
+      <button type="button" id="asis-nv-tipo-directiva" onclick="asisNvSetTipo('directiva')" class="vot-aud-btn vot-aud-on">🦁 Junta de Directiva</button>
+      <button type="button" id="asis-nv-tipo-asamblea" onclick="asisNvSetTipo('asamblea')" class="vot-aud-btn">👥 Asamblea de socios</button>
+    </div>
+    <input type="hidden" id="asis-nv-tipo" value="directiva">
+    <div style="display:flex;gap:10px;margin-top:12px;">
+      <div style="flex:1;"><label class="form-label">No. de junta / acta</label><input id="asis-nv-numero" class="form-input" type="number" min="1" inputmode="numeric"></div>
+      <div style="flex:1;"><label class="form-label">Hora de inicio</label><input id="asis-nv-hora" class="form-input" type="time"></div>
+    </div>
+    <label class="form-label" style="margin-top:12px;">Fecha</label>
+    <input id="asis-nv-fecha" class="form-input" type="date">
+    <div id="asis-nv-nota" style="font-size:12px;color:#5C6B80;margin-top:10px;line-height:1.5;"></div>
+    <button id="asis-nv-save" onclick="asisCrear()" class="btn-primary" style="width:100%;margin-top:16px;">Abrir pase de lista →</button>
+    <button onclick="asisCerrarNueva()" style="width:100%;margin-top:8px;background:none;border:none;color:#5C6B80;font-size:14px;cursor:pointer;padding:10px;">Cancelar</button>
+  </div>
+</div>
+
+<div id="modal-asis-detalle" class="modal-overlay" onclick="if(event.target===this)asisCerrarDetalle()" style="z-index:10051;align-items:flex-end;">
+  <div class="modal-sheet" style="max-height:92vh;overflow-y:auto;">
+    <div class="modal-handle"></div>
+    <div id="asis-det-body"></div>
+  </div>
+</div>
+
+<div id="modal-asis-qr" class="modal-overlay" style="z-index:10060;align-items:center;background:rgba(13,27,42,0.96);">
+  <div style="width:100%;max-width:420px;margin:auto;padding:24px;text-align:center;">
+    <div style="color:#E8B84B;font-family:'Playfair Display',serif;font-size:20px;font-weight:700;">Registra tu asistencia</div>
+    <div id="asis-qr-titulo" style="color:rgba(255,255,255,0.7);font-size:13px;margin:4px 0 18px;"></div>
+    <div style="background:#fff;border-radius:18px;padding:18px;display:inline-block;"><div id="asis-qr-canvas" style="width:260px;height:260px;"></div></div>
+    <div style="color:rgba(255,255,255,0.65);font-size:12.5px;margin-top:16px;">Escanéalo desde la app (Inicio → Pase de lista) o escribe el código:</div>
+    <div id="asis-qr-codigo" style="color:#fff;font-size:44px;font-weight:800;letter-spacing:8px;font-variant-numeric:tabular-nums;margin-top:6px;">······</div>
+    <div id="asis-qr-cuenta" style="color:rgba(255,255,255,0.5);font-size:12px;margin-top:2px;"></div>
+    <div id="asis-qr-presentes" style="color:#E8B84B;font-size:15px;font-weight:700;margin-top:14px;"></div>
+    <button onclick="asisCerrarQR()" style="margin-top:20px;background:#E8B84B;color:#0D1B2A;border:none;border-radius:12px;padding:13px 28px;font-family:'DM Sans',sans-serif;font-size:15px;font-weight:800;cursor:pointer;">✓ Terminar QR</button>
+  </div>
+</div>
+
+<div id="modal-asis-registro" class="modal-overlay" onclick="if(event.target===this)asisCerrarRegistro()" style="z-index:10055;align-items:center;">
+  <div class="modal-sheet">
+    <div class="modal-handle"></div>
+    <div class="modal-title">📍 Registrar mi asistencia</div>
+    <div id="asis-reg-body"></div>
   </div>
 </div>
 

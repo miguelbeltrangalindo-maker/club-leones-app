@@ -114,6 +114,9 @@ service cloud.firestore {
       return isMember() && currentUserDoc().cargos is list &&
         currentUserDoc().cargos.hasAny(['Presidente','Past Presidente','Vicepresidente','Segundo Vicepresidente','Secretario','Tesorero','Domador','Retorcedor','Vocal dos años','Vocal un año']);
     }
+    function asistenciaData(aid) {
+      return get(/databases/$(database)/documents/asistencias/$(aid)).data;
+    }
     function votacionData(vid) {
       return get(/databases/$(database)/documents/votaciones/$(vid)).data;
     }
@@ -773,6 +776,36 @@ service cloud.firestore {
                || (votacionData(vid).get('tipo', null) != 'eleccion' && request.resource.data.voto in ['favor','contra','abstencion'])
              );
         allow delete: if isSelf(uid) && votacionData(vid).estado == 'abierta';
+      }
+    }
+
+    // ── Pase de lista digital ────────────────────────────────────────────────
+    // Gestionan los mismos líderes que votaciones (Presidente/Secretario/Tesorero,
+    // admin/subadmin/tesorero). Cualquier miembro aprobado puede leer la lista
+    // (el socio necesita ver si hay un pase de lista abierto donde está convocado).
+    match /asistencias/{aid} {
+      allow read: if isApprovedMember();
+      allow create: if esLiderVotacion()
+        && request.resource.data.tipo in ['directiva','asamblea']
+        && request.resource.data.estado == 'abierta'
+        && request.resource.data.convocadosUIDs is list;
+      allow update, delete: if esLiderVotacion();
+
+      // Marca de asistencia por socio (id = uid).
+      match /registros/{uid} {
+        allow read: if isSelf(uid) || esLiderVotacion();
+        allow write: if esLiderVotacion();
+        // Auto-registro por QR/código: solo uno mismo, convocado, lista abierta y
+        // con el código vigente (el celular del líder lo rota cada 30 s).
+        allow create, update: if isSelf(uid) && isApprovedMember()
+          && asistenciaData(aid).estado == 'abierta'
+          && uid in asistenciaData(aid).convocadosUIDs
+          && request.resource.data.keys().hasOnly(['estado','via','codigo','nombre','ts'])
+          && request.resource.data.estado == 'presente'
+          && request.resource.data.via == 'qr'
+          && request.resource.data.codigo is string
+          && (request.resource.data.codigo == asistenciaData(aid).get('codigo', null)
+              || request.resource.data.codigo == asistenciaData(aid).get('codigoPrev', null));
       }
     }
 
