@@ -627,7 +627,50 @@ service cloud.firestore {
           && fieldStrOk(d, 'storagePath', 300)
           && fieldStrOk(d, 'subidoPorNombre', 200);
     }
-    function validReservacion() {
+    // Reservaciones: en create se valida el doc completo; en update solo los
+    // campos que cambian. Validar el doc completo en cada update superaba el
+    // límite de 1000 expresiones de Firestore y rechazaba cancelaciones/pagos
+    // con "Missing or insufficient permissions".
+    function rsvS(d, ch, k, max) { return !(k in ch) || d[k] == null || (d[k] is string && d[k].size() <= max); }
+    function rsvN(d, ch, k, max) { return !(k in ch) || d[k] == null || (d[k] is number && d[k] >= 0 && d[k] <= max); }
+    function rsvIn(d, ch, k, l)  { return !(k in ch) || d[k] == null || d[k] in l; }
+    function rsvB(d, ch, k)      { return !(k in ch) || d[k] == null || d[k] is bool; }
+    function validReservacionCambios() {
+      let d = request.resource.data;
+      let ch = d.diff(resource.data).affectedKeys();
+      return rsvS(d, ch, 'salonId', 100)
+          && rsvS(d, ch, 'salonNombre', 200)
+          && rsvS(d, ch, 'fecha', 30)
+          && rsvS(d, ch, 'horaInicio', 10)
+          && rsvS(d, ch, 'horaFin', 10)
+          && rsvS(d, ch, 'evento', 300)
+          && rsvS(d, ch, 'anfitrion', 200)
+          && rsvS(d, ch, 'contacto', 200)
+          && rsvN(d, ch, 'numInvitados', 100000)
+          && rsvS(d, ch, 'observaciones', 1500)
+          && rsvN(d, ch, 'costo', 50000000)
+          && rsvN(d, ch, 'descuentoAplicado', 50000000)
+          && rsvN(d, ch, 'horasExtraPrecio', 50000000)
+          && rsvN(d, ch, 'horasExtraCantidad', 100000)
+          && rsvN(d, ch, 'horasExtraCosto', 50000000)
+          && rsvN(d, ch, 'iva', 50000000)
+          && rsvN(d, ch, 'anticipo', 50000000)
+          && rsvN(d, ch, 'saldoPagado', 50000000)
+          && rsvN(d, ch, 'fianzaMonto', 50000000)
+          && rsvS(d, ch, 'fianzaNota', 800)
+          && rsvIn(d, ch, 'estado', ['tentativa','confirmada','realizada','cancelada'])
+          && rsvS(d, ch, 'motivoCancelacion', 1500)
+          && rsvIn(d, ch, 'tipoDevolucion', ['ninguna','parcial','total','sin_pagos'])
+          && rsvN(d, ch, 'montoDevuelto', 50000000)
+          && rsvS(d, ch, 'realizadaEn', 30)
+          && rsvS(d, ch, 'canceladoEn', 30)
+          && rsvB(d, ch, 'aplicaIva')
+          && rsvB(d, ch, 'afectaEstacionamiento')
+          && rsvB(d, ch, 'fianzaRecibida')
+          && rsvB(d, ch, 'realizadaAuto')
+          && rsvB(d, ch, 'movimientosEliminados');
+    }
+    function validReservacionCompleta() {
       let d = request.resource.data;
       return fieldStrOk(d, 'salonId', 100)
           && fieldStrOk(d, 'salonNombre', 200)
@@ -660,6 +703,10 @@ service cloud.firestore {
           && fieldBoolOk(d, 'movimientosEliminados')
           && fieldStrOk(d, 'realizadaEn', 30)
           && fieldStrOk(d, 'canceladoEn', 30);
+    }
+    function validReservacion() {
+      return (request.method == 'create' && validReservacionCompleta())
+          || (request.method == 'update' && validReservacionCambios());
     }
 
     // salones: catálogo de salones rentables
