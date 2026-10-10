@@ -1172,3 +1172,267 @@ exports.buscarSociosOffline = onCall(async () => {
   );
   return { socios };
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  PAGO EN LÍNEA CON TARJETA (Stripe Checkout)
+//  1) crearCheckoutPago (callable): el socio pide pagar su recibo más antiguo
+//     o todo lo vencido. El MONTO SE CALCULA AQUÍ desde sus recibos — el
+//     cliente solo manda el modo, nunca cantidades ni ids.
+//  2) stripeWebhook (HTTP): Stripe avisa que el pago se cobró. Se verifica la
+//     firma y se aplica el pago una sola vez (idempotente por pagos_en_linea).
+//  Mientras la llave sea sk_test_ solo admin/subadmin pueden generar cobros.
+// ═══════════════════════════════════════════════════════════════════════════
+const { onRequest } = require('firebase-functions/v2/https');
+const { defineSecret } = require('firebase-functions/params');
+const STRIPE_SECRET_KEY     = defineSecret('STRIPE_SECRET_KEY');
+const STRIPE_WEBHOOK_SECRET = defineSecret('STRIPE_WEBHOOK_SECRET');
+
+const PAGO_MESES = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+const pagoNorm = s => String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').trim();
+const pagoPeriodIdx = r => (Number(r.anio) || 0) * 12 + Math.max(0, PAGO_MESES.indexOf(r.mes || 'Enero'));
+const pagoTotal = r => Number(r.total ?? Math.max(0, (r.c1||0)+(r.c2||0)+(r.c3||0)+(r.c4||0)+(r.c5||0)+(r.c6||0)+(r.c7||0)-(r.descuento||0))) || 0;
+const pagoSaldo = r => Math.max(0, Math.round((pagoTotal(r) - Number(r.montoPagado || 0)) * 100) / 100);
+const pagoEsDeuda = r => { const e = pagoNorm(r.estado || 'pendiente'); return e !== 'pagado' && e !== 'condonado'; };
+// Mes actual en hora de México (el servidor corre en UTC)
+function pagoIdxHoy() {
+  const p = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Mexico_City', year: 'numeric', month: 'numeric' }).formatToParts(new Date());
+  const y = Number(p.find(x => x.type === 'year').value), m = Number(p.find(x => x.type === 'month').value);
+  return y * 12 + (m - 1);
+}
+function pagoFechaHoyMX() {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Mexico_City' }).format(new Date()); // YYYY-MM-DD
+}
+// Mismo reparto que dpPagosCalcDistribucion en el cliente: más viejo → más nuevo
+function pagoDistribuir(monto, recibos) {
+  const pend = recibos.filter(r => pagoEsDeuda(r) && pagoSaldo(r) > 0).sort((a, b) => pagoPeriodIdx(a) - pagoPeriodIdx(b));
+  let restante = Number(monto || 0);
+  const lineas = pend.map(r => {
+    const saldoPrevio = pagoSaldo(r);
+    const aplicar = Math.round(Math.min(restante, saldoPrevio) * 100) / 100;
+    restante = Math.max(0, Math.round((restante - aplicar) * 100) / 100);
+    const montoPrevio = Number(r.montoPagado || 0);
+    const nuevoPagado = Math.round((montoPrevio + aplicar) * 100) / 100;
+    const nuevoSaldo = Math.max(0, Math.round((pagoTotal(r) - nuevoPagado) * 100) / 100);
+    const nuevoEstado = nuevoSaldo <= 0.0001 ? 'pagado' : (aplicar > 0 ? 'parcial' : pagoNorm(r.estado || 'pendiente'));
+    return { reciboId: r.id, mes: r.mes || '', anio: r.anio || '', totalRecibo: pagoTotal(r), saldoPrevio, montoPrevio, montoAplicado: aplicar, nuevoPagado, nuevoSaldo, nuevoEstado };
+  });
+  const deudaAntes = pend.reduce((s, r) => s + pagoSaldo(r), 0);
+  const aplicado = lineas.reduce((s, l) => s + l.montoAplicado, 0);
+  return { lineas, sobrante: restante, aplicado, deudaAntes, deudaDespues: Math.max(0, deudaAntes - aplicado) };
+}
+async function pagoRubroId(nombre, tipo) {
+  const s = await db.collection('rubros_financieros').where('nombre', '==', nombre).where('tipo', '==', tipo).limit(5).get();
+  const activo = s.docs.find(d => d.data().activo !== false);
+  if (activo) return activo.id;
+  const ref = await db.collection('rubros_financieros').add({ nombre, tipo, activo: true, creadoEn: new Date().toISOString(), creadoPor: 'stripe' });
+  return ref.id;
+}
+async function pagoTesoreroNombre() {
+  const s = await db.collection('usuarios').where('rol', '==', 'tesorero').limit(1).get();
+  if (!s.empty) { const u = s.docs[0].data(); return `${u.nombre || ''} ${u.apellido || ''}`.trim(); }
+  const c = await db.collection('usuarios').where('cargos', 'array-contains', 'Tesorero').limit(1).get();
+  if (!c.empty) { const u = c.docs[0].data(); return `${u.nombre || ''} ${u.apellido || ''}`.trim(); }
+  return 'Tesorero del Club';
+}
+
+exports.crearCheckoutPago = onCall({ secrets: [STRIPE_SECRET_KEY] }, async (request) => {
+  const uid = request.auth?.uid;
+  if (!uid) throw new HttpsError('unauthenticated', 'Inicia sesión');
+  const modo = request.data?.modo;
+  if (!['antiguo', 'total'].includes(modo)) throw new HttpsError('invalid-argument', 'Modo de pago inválido');
+
+  const [udSnap, rdSnap] = await Promise.all([db.collection('usuarios').doc(uid).get(), db.collection('roles').doc(uid).get()]);
+  if (!udSnap.exists) throw new HttpsError('failed-precondition', 'No se encontró tu perfil');
+  const u = udSnap.data();
+  const rol = (rdSnap.exists && rdSnap.data().rol) || u.rol || '';
+  if (!['socio', 'viuda'].includes(u.tipo) || u.estado === 'baja' || rol === 'pendiente') {
+    throw new HttpsError('permission-denied', 'Tu cuenta no puede pagar en línea');
+  }
+  const key = STRIPE_SECRET_KEY.value();
+  if (key.startsWith('sk_test_') && !['admin', 'subadmin'].includes(rol)) {
+    throw new HttpsError('failed-precondition', 'El pago con tarjeta está en pruebas. Usa transferencia por ahora.');
+  }
+
+  const rs = await db.collection('recibos').where('socioUID', '==', uid).get();
+  const pend = rs.docs.map(d => ({ id: d.id, ...d.data() }))
+    .filter(r => pagoEsDeuda(r) && pagoSaldo(r) > 0)
+    .sort((a, b) => pagoPeriodIdx(a) - pagoPeriodIdx(b));
+  if (!pend.length) throw new HttpsError('failed-precondition', 'No tienes adeudo pendiente');
+
+  // "antiguo" = solo el recibo más viejo; "total" = todo lo vencido hasta el mes actual
+  // (los meses futuros prefacturados no se cobran en "total")
+  const idxHoy = pagoIdxHoy();
+  const sel = modo === 'antiguo' ? [pend[0]] : pend.filter(r => pagoPeriodIdx(r) <= idxHoy);
+  if (!sel.length) throw new HttpsError('failed-precondition', 'No tienes meses vencidos por pagar');
+  if (sel.some(r => r.revisionPago?.estado === 'pendiente_revision')) {
+    throw new HttpsError('failed-precondition', 'Tienes un comprobante de transferencia en revisión. Espera a que tesorería lo confirme.');
+  }
+  const monto = Math.round(sel.reduce((s, r) => s + pagoSaldo(r), 0) * 100) / 100;
+  const centavos = Math.round(monto * 100);
+  if (centavos < 1000) throw new HttpsError('failed-precondition', 'El monto mínimo para pagar con tarjeta es $10.00');
+
+  const periodos = sel.map(r => `${r.mes} ${r.anio}`).join(', ');
+  const nombre = `${u.nombre || ''} ${u.apellido || ''}`.trim();
+  const pagoRef = db.collection('pagos_en_linea').doc();
+  await pagoRef.set({
+    socioUID: uid, nombreSocio: nombre, numeroSocio: u.numeroSocio || '',
+    modo, reciboIds: sel.map(r => r.id), periodos,
+    saldosEsperados: Object.fromEntries(sel.map(r => [r.id, Number(r.montoPagado || 0)])),
+    monto, montoCentavos: centavos, moneda: 'mxn',
+    proveedor: 'stripe', modoStripe: key.startsWith('sk_test_') ? 'prueba' : 'real',
+    estado: 'creado', creadoEn: new Date().toISOString(),
+  });
+
+  const stripe = require('stripe')(key);
+  const APP_URL = process.env.APP_URL || 'https://app-club-de-leones.web.app';
+  const session = await stripe.checkout.sessions.create({
+    mode: 'payment',
+    payment_method_types: ['card'],
+    locale: 'es',
+    line_items: [{
+      quantity: 1,
+      price_data: {
+        currency: 'mxn',
+        unit_amount: centavos,
+        product_data: { name: `Cuotas Club de Leones Veracruz — ${periodos}`.slice(0, 250), description: `Socio: ${nombre}${u.numeroSocio ? ' · No. ' + u.numeroSocio : ''}`.slice(0, 250) },
+      },
+    }],
+    customer_email: u.correo || undefined,
+    client_reference_id: pagoRef.id,
+    metadata: { pagoId: pagoRef.id, socioUID: uid },
+    payment_intent_data: { metadata: { pagoId: pagoRef.id, socioUID: uid }, description: `Cuotas ${periodos} — ${nombre}`.slice(0, 500) },
+    success_url: `${APP_URL}/?pago=ok&pid=${pagoRef.id}`,
+    cancel_url: `${APP_URL}/?pago=cancelado&pid=${pagoRef.id}`,
+    expires_at: Math.floor(Date.now() / 1000) + 30 * 60,
+  });
+  await pagoRef.update({ stripeSessionId: session.id });
+  return { url: session.url, monto, periodos };
+});
+
+// Aplica un pago confirmado por Stripe. Idempotente: si pagos_en_linea ya está
+// 'aplicado' no hace nada (Stripe puede reenviar el mismo evento).
+async function pagoAplicarSesion(stripe, session) {
+  const pagoId = session.metadata?.pagoId || session.client_reference_id;
+  if (!pagoId) { console.warn('stripe: sesión sin pagoId', session.id); return; }
+  const pagoRef = db.collection('pagos_en_linea').doc(pagoId);
+  const pre = await pagoRef.get();
+  if (!pre.exists) { console.warn('stripe: pagos_en_linea no existe', pagoId); return; }
+  if (pre.data().estado === 'aplicado') return;
+
+  const p = pre.data();
+  const montoCobrado = Number(session.amount_total || 0) / 100;
+  const fecha = pagoFechaHoyMX();
+  const ahora = new Date().toISOString();
+  const [rubroIngreso, tesoreroNombre] = await Promise.all([pagoRubroId('Cuotas de Socios', 'ingreso'), pagoTesoreroNombre()]);
+
+  const resultado = await db.runTransaction(async (tx) => {
+    const cur = await tx.get(pagoRef);
+    if (cur.data().estado === 'aplicado') return null;
+    const snaps = await Promise.all(p.reciboIds.map(id => tx.get(db.collection('recibos').doc(id))));
+    const recibos = snaps.filter(s => s.exists).map(s => ({ id: s.id, ...s.data() }));
+    const dist = pagoDistribuir(montoCobrado, recibos);
+    const afectadas = dist.lineas.filter(l => l.montoAplicado > 0);
+    // Si algo cambió desde que se creó el cobro (p. ej. tesorería registró otro
+    // pago), lo que no se pudo aplicar queda como sobrante para revisión manual.
+    const requiereRevision = dist.sobrante > 0.009 || session.currency !== 'mxn' || Math.round(montoCobrado * 100) !== p.montoCentavos;
+
+    const movRef = db.collection('movimientos_financieros').doc();
+    const pagoSocioRef = db.collection('pagos_socios').doc();
+    const periodos = afectadas.map(l => `${l.mes} ${l.anio}`).join(', ') || p.periodos;
+    if (dist.aplicado > 0) {
+      tx.set(movRef, {
+        tipo: 'ingreso', rubroId: rubroIngreso, rubroNombre: 'Cuotas de Socios',
+        concepto: `Cuotas — ${p.nombreSocio} (${periodos}) · Pago con tarjeta en línea`,
+        monto: dist.aplicado, fecha, metodoPago: 'tarjeta', destino: 'banco',
+        autoGenerado: true, origen: 'pago_socio', registradoPor: 'stripe', registradoPorNombre: 'Pago en línea (Stripe)',
+        referencia: session.payment_intent || session.id, pagoEnLineaId: pagoId, creadoEn: ahora,
+      });
+      tx.set(pagoSocioRef, {
+        socioUID: p.socioUID, nombreSocio: p.nombreSocio, numeroSocio: p.numeroSocio || '',
+        montoTotal: dist.aplicado, sobrante: dist.sobrante, fechaPago: fecha,
+        metodoPago: 'tarjeta', destino: 'banco', destinoLabel: 'tarjeta',
+        referencia: String(session.payment_intent || session.id), desglose: afectadas,
+        deudaAntes: dist.deudaAntes, deudaDespues: dist.deudaDespues, movimientoFinId: movRef.id,
+        tesoreroNombre, creadoPorUid: p.socioUID, creadoPorNombre: `${p.nombreSocio} (pago en línea)`,
+        creadoEn: ahora, pagoEnLineaId: pagoId,
+      });
+      const fechaIso = new Date(fecha + 'T12:00:00').toISOString();
+      for (const l of afectadas) {
+        const up = { montoPagado: l.nuevoPagado, estado: l.nuevoEstado, fechaUltimoAbono: fechaIso, pagoSocioId: pagoSocioRef.id, modificado: ahora };
+        if (l.nuevoEstado === 'pagado') { up.fechaPago = fecha; up.movimientoFinId = movRef.id; up.movimientoDestino = 'tarjeta'; }
+        tx.update(db.collection('recibos').doc(l.reciboId), up);
+      }
+    }
+    tx.update(pagoRef, {
+      estado: 'aplicado', aplicadoEn: ahora, montoCobrado, montoAplicado: dist.aplicado, sobrante: dist.sobrante,
+      requiereRevision, stripePaymentIntent: String(session.payment_intent || ''),
+      movimientoFinId: dist.aplicado > 0 ? movRef.id : null, pagoSocioId: dist.aplicado > 0 ? pagoSocioRef.id : null,
+    });
+    return { dist, afectadas, requiereRevision };
+  });
+  if (!resultado) return;
+
+  // Comisión de Stripe: la absorbe el club → egreso en "Comisiones bancarias"
+  try {
+    const pi = await stripe.paymentIntents.retrieve(session.payment_intent, { expand: ['latest_charge.balance_transaction'] });
+    const bt = pi.latest_charge?.balance_transaction;
+    const fee = bt && typeof bt === 'object' ? Number(bt.fee || 0) / 100 : 0;
+    if (fee > 0) {
+      const rubroEgreso = await pagoRubroId('Comisiones bancarias', 'egreso');
+      const feeRef = await db.collection('movimientos_financieros').add({
+        tipo: 'egreso', rubroId: rubroEgreso, rubroNombre: 'Comisiones bancarias',
+        concepto: `Comisión Stripe — pago de ${p.nombreSocio} (${p.periodos})`,
+        monto: fee, fecha, metodoPago: 'transferencia', destino: 'banco',
+        autoGenerado: true, origen: 'comision_stripe', registradoPor: 'stripe', registradoPorNombre: 'Pago en línea (Stripe)',
+        referencia: String(session.payment_intent), pagoEnLineaId: pagoId, creadoEn: new Date().toISOString(),
+      });
+      await pagoRef.update({ comision: fee, comisionMovId: feeRef.id });
+    }
+  } catch (e) { console.error('stripe: no se pudo registrar comisión', pagoId, e.message); }
+
+  await db.collection('adeudos').doc(p.socioUID).set({ ultimoPagoAt: new Date().toISOString(), updatedAt: new Date().toISOString() }, { merge: true }).catch(() => {});
+  await db.collection('auditoria').add({
+    uid: p.socioUID, nombre: p.nombreSocio, rol: 'socio', accion: 'pago_en_linea_tarjeta', modulo: 'pagos',
+    datos: { pagoId, monto: montoCobrado, aplicado: resultado.dist.aplicado, sobrante: resultado.dist.sobrante, periodos: p.periodos, paymentIntent: String(session.payment_intent || '') },
+    severidad: resultado.requiereRevision ? 'importante' : 'normal', categoria: 'finanzas', origen: 'servidor',
+    revisado: false, ip: '', dispositivo: 'Stripe', fecha: new Date().toISOString(),
+  }).catch(() => {});
+  // Push al socio
+  try {
+    const ud = await db.collection('usuarios').doc(p.socioUID).get();
+    const token = ud.exists ? ud.data().fcmToken : null;
+    if (token) await sendMulticast([token], '✅ Pago recibido', `Tu pago de $${montoCobrado.toFixed(2)} (${p.periodos}) quedó registrado. ¡Gracias!`);
+  } catch (e) { console.warn('stripe: push', e.message); }
+}
+
+exports.stripeWebhook = onRequest({ secrets: [STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET] }, async (req, res) => {
+  if (req.method !== 'POST') { res.status(405).send('Method not allowed'); return; }
+  const stripe = require('stripe')(STRIPE_SECRET_KEY.value());
+  let event;
+  try {
+    event = stripe.webhooks.constructEvent(req.rawBody, req.headers['stripe-signature'], STRIPE_WEBHOOK_SECRET.value());
+  } catch (e) {
+    console.warn('stripe: firma inválida', e.message);
+    res.status(400).send('Firma inválida'); return;
+  }
+  try {
+    const session = event.data.object;
+    if ((event.type === 'checkout.session.completed' && session.payment_status === 'paid') ||
+        event.type === 'checkout.session.async_payment_succeeded') {
+      await pagoAplicarSesion(stripe, session);
+    } else if (event.type === 'checkout.session.expired' || event.type === 'checkout.session.async_payment_failed') {
+      const pagoId = session.metadata?.pagoId;
+      if (pagoId) {
+        const ref = db.collection('pagos_en_linea').doc(pagoId);
+        await db.runTransaction(async tx => {
+          const s = await tx.get(ref);
+          if (s.exists && s.data().estado === 'creado') tx.update(ref, { estado: event.type.endsWith('expired') ? 'expirado' : 'fallido', actualizadoEn: new Date().toISOString() });
+        });
+      }
+    }
+    res.json({ received: true });
+  } catch (e) {
+    console.error('stripe: error aplicando evento', event.id, e);
+    res.status(500).send('Error'); // Stripe reintenta
+  }
+});

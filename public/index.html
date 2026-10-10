@@ -672,6 +672,7 @@ onAuthStateChanged(auth, async (user) => {
       loadComunicados().catch(e => console.error('loadComunicados ERROR:', e))
     ]).then(() => { if (window.notifRefreshBadge) window.notifRefreshBadge(); });
     if (window.asisProcesarURLPendiente) window.asisProcesarURLPendiente(); // QR escaneado con la cámara del teléfono
+    if (window.pagoProcesarRetorno) window.pagoProcesarRetorno();             // regreso desde Stripe Checkout
     initPushNotifications(user.uid);
   } catch(e) {
     console.error('Auth error:', e);
@@ -2516,7 +2517,7 @@ window.frEliminarMovimiento = function(id) {
 // ════════════════════════════════════════════════════
 async function loadMisRecibos() {
   const u = window.currentUser;
-  if (!u || u.tipo !== 'socio') return;
+  if (!u || !['socio','viuda'].includes(u.tipo)) return;
   const wrap = document.getElementById('mis-recibos-wrap');
   if (!wrap) return;
   wrap.innerHTML = '<div style="text-align:center;padding:20px;color:#5C6B80;font-size:13px;">Cargando recibos...</div>';
@@ -3670,12 +3671,105 @@ function _miReciboPagoPanel(r, fmt) {
           <div style="font-size:11px;color:rgba(255,255,255,0.45);text-align:center;margin-top:4px;">Toca cualquiera de los datos para copiarlo</div>
         </div>
       </div>
+      ${_pagoTarjetaBloqueRecibo(r, fmt)}
       <div style="margin-top:16px;">
         ${rechazoNota}${banner}
       </div>
     </div>`;
 }
 window._miReciboPagoPanel = _miReciboPagoPanel;
+
+// ══ PAGO CON TARJETA (Stripe Checkout) ══
+// El monto lo calcula la Cloud Function crearCheckoutPago desde los recibos del
+// socio; aquí solo se muestra para que el socio sepa cuánto se le cobrará.
+// Reglas: un solo recibo → forzosamente el más antiguo; "total" → todo lo vencido
+// (sin meses futuros prefacturados). Mientras Stripe esté en modo prueba solo
+// admin/subadmin ven los botones (el servidor también lo exige).
+const PAGO_TARJETA_SOLO_ADMIN = true;
+function _pagoTarjetaVisible() {
+  return !PAGO_TARJETA_SOLO_ADMIN || isAdminOrSub();
+}
+function _pagoTarjetaInfo() {
+  const pend = (window._misRecibos || [])
+    .filter(r => reciboEsDeuda(r) && getReciboSaldo(r) > 0)
+    .sort((a,b) => getReciboPeriodIndex(a) - getReciboPeriodIndex(b));
+  const oldest = pend[0] || null;
+  const vencidos = pend.filter(r => reciboEsMorosidad(r));
+  const totalVencido = vencidos.reduce((s,r) => s + getReciboSaldo(r), 0);
+  const enRevision = r => r && r.revisionPago && r.revisionPago.estado === 'pendiente_revision';
+  return { pend, oldest, vencidos, totalVencido, enRevision };
+}
+const _pagoTarjetaBtnStyle = 'width:100%;padding:15px;background:linear-gradient(135deg,#635BFF,#4B44D6);color:#fff;border:none;border-radius:13px;font-family:\'DM Sans\',sans-serif;font-size:15px;font-weight:800;cursor:pointer;box-shadow:0 4px 14px rgba(99,91,255,0.3);display:flex;align-items:center;justify-content:center;gap:8px;margin-bottom:8px;';
+function _pagoTarjetaWrap(inner) {
+  return `<div style="margin-top:16px;background:#fff;border:1.5px solid rgba(99,91,255,0.25);border-radius:16px;padding:16px;">
+    <div style="font-size:11px;font-weight:700;color:#4B44D6;letter-spacing:1px;text-transform:uppercase;margin-bottom:10px;">💳 Pagar con tarjeta${PAGO_TARJETA_SOLO_ADMIN ? ' · <span style="color:#C0392B;">modo prueba</span>' : ''}</div>
+    ${inner}
+    <div style="font-size:11px;color:#5C6B80;text-align:center;margin-top:6px;">🔒 Pago seguro con Stripe. El monto ya está calculado y no se puede modificar.</div>
+  </div>`;
+}
+function _pagoTarjetaBloqueRecibo(r, fmt) {
+  if (!_pagoTarjetaVisible()) return '';
+  const { oldest, enRevision } = _pagoTarjetaInfo();
+  if (!oldest) return '';
+  if (oldest.id !== r.id) {
+    return _pagoTarjetaWrap(`<div style="font-size:13px;color:#3A4A5C;padding:4px 2px 8px;">Para pagar con tarjeta primero debes liquidar tu recibo más antiguo: <b>${esc(oldest.mes||'')} ${esc(String(oldest.anio||''))}</b> (${fmt(getReciboSaldo(oldest))}).</div>
+      <button onclick="miReciboVer('${oldest.id}')" style="${_pagoTarjetaBtnStyle}background:#F5F0E8;color:#4B44D6;box-shadow:none;">Ir a ${esc(oldest.mes||'')} ${esc(String(oldest.anio||''))}</button>`);
+  }
+  if (enRevision(r)) return _pagoTarjetaWrap(`<div style="font-size:13px;color:#2471A3;padding:4px 2px 8px;">Este recibo tiene un comprobante de transferencia en revisión; espera a que tesorería lo confirme.</div>`);
+  return _pagoTarjetaWrap(`<button onclick="miReciboPagarTarjeta('antiguo', this)" style="${_pagoTarjetaBtnStyle}">💳 Pagar ${esc(r.mes||'')} ${esc(String(r.anio||''))} — ${fmt(getReciboSaldo(r))}</button>`);
+}
+function _pagoTarjetaBloqueAdeudo(fmt) {
+  if (!_pagoTarjetaVisible()) return '';
+  const { oldest, vencidos, totalVencido, enRevision } = _pagoTarjetaInfo();
+  if (!oldest) return '';
+  if (enRevision(oldest) || vencidos.some(enRevision)) {
+    return _pagoTarjetaWrap(`<div style="font-size:13px;color:#2471A3;padding:4px 2px 8px;">Tienes un comprobante de transferencia en revisión; espera a que tesorería lo confirme para pagar con tarjeta.</div>`);
+  }
+  let html = `<button onclick="miReciboPagarTarjeta('antiguo', this)" style="${_pagoTarjetaBtnStyle}">💳 Pagar ${esc(oldest.mes||'')} ${esc(String(oldest.anio||''))} — ${fmt(getReciboSaldo(oldest))}</button>`;
+  if (vencidos.length > 1) {
+    html += `<button onclick="miReciboPagarTarjeta('total', this)" style="${_pagoTarjetaBtnStyle}background:linear-gradient(135deg,#1A7A4A,#15623C);box-shadow:0 4px 14px rgba(26,122,74,0.3);">💳 Pagar todo lo vencido (${vencidos.length} meses) — ${fmt(totalVencido)}</button>`;
+  }
+  return _pagoTarjetaWrap(html);
+}
+
+window.miReciboPagarTarjeta = async function(modo, btn) {
+  if (btn) { btn.disabled = true; btn.dataset.txt = btn.innerHTML; btn.innerHTML = '⏳ Preparando pago seguro…'; }
+  try {
+    const fn = httpsCallable(functions, 'crearCheckoutPago');
+    const res = await fn({ modo });
+    const url = res.data && res.data.url;
+    if (!url || !/^https:\/\/checkout\.stripe\.com\//.test(url)) throw new Error('No se pudo iniciar el pago');
+    try { await logAuditoria('pago_tarjeta_iniciado', { modo, monto: res.data.monto, periodos: res.data.periodos }); } catch(_) {}
+    window.location.href = url;
+  } catch(e) {
+    showToast(e.message || 'No se pudo iniciar el pago', 'error');
+    if (btn) { btn.disabled = false; btn.innerHTML = btn.dataset.txt || '💳 Pagar'; }
+  }
+};
+
+// Regreso desde Stripe (?pago=ok|cancelado): se procesa tras iniciar sesión
+(function pagoCapturarURL() {
+  try {
+    const p = new URLSearchParams(location.search);
+    const st = p.get('pago');
+    if (st === 'ok' || st === 'cancelado') {
+      sessionStorage.setItem('pagoRetornoURL', st);
+      history.replaceState(null, '', location.pathname);
+    }
+  } catch(_) {}
+})();
+window.pagoProcesarRetorno = function() {
+  let st = null;
+  try { st = sessionStorage.getItem('pagoRetornoURL'); sessionStorage.removeItem('pagoRetornoURL'); } catch(_) {}
+  if (!st) return;
+  if (st === 'cancelado') { showToast('Pago cancelado. No se hizo ningún cargo.', 'info'); return; }
+  showToast('✅ Pago recibido. Tu recibo se actualizará en unos segundos.', 'success');
+  // El webhook de Stripe tarda unos segundos en aplicar el pago
+  [4000, 12000].forEach(ms => setTimeout(() => {
+    if (typeof invalidateCollectionCache === 'function') invalidateCollectionCache('recibos');
+    loadMisRecibos();
+  }, ms));
+};
 
 // Panel "Pagar adeudo" (saldo TOTAL de todos los meses pendientes, sin desglose de
 // conceptos): saldo, tesorero en turno, datos bancarios y envío de comprobante —
@@ -3734,6 +3828,7 @@ function _pagoAdeudoTotalPanel(oldest, totalAd, nMeses, tesorero, fmt) {
           <div style="font-size:11px;color:rgba(255,255,255,0.45);text-align:center;margin-top:4px;">Toca cualquiera de los datos para copiarlo</div>
         </div>
       </div>
+      ${_pagoTarjetaBloqueAdeudo(fmt)}
       <div style="margin-top:16px;">
         ${rechazoNota}${banner}
       </div>
@@ -20272,7 +20367,7 @@ window.finCategoriaPDF = function() {
 
 // IMPORTANTE: APP_VERSION debe coincidir con "version" en version.json y con
 // VERSION en sw.js. Bumpear las 3 juntas o el banner de update queda pegado.
-const APP_VERSION = '20261009-005';
+const APP_VERSION = '20261010-001';
 
 // Referencia al SW en espera (si existe), compartida entre ambas rutas de actualización
 window._pendingSW = null;

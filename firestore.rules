@@ -489,6 +489,14 @@ service cloud.firestore {
       allow delete: if isAdminOrSub() || isTesorero();
     }
 
+    // pagos_en_linea: cobros con tarjeta (Stripe). Solo las Cloud Functions
+    // crearCheckoutPago / stripeWebhook escriben (admin SDK); el socio lee los suyos.
+    match /pagos_en_linea/{docId} {
+      allow read: if isAdminOrSub() || isTesorero() ||
+        (isAuthenticated() && resource.data.socioUID == request.auth.uid);
+      allow write: if false;
+    }
+
     match /tarifas/{docId} {
       allow read: if isApprovedMember();
       allow create, update, delete: if isAdminOrSub() || isTesorero();
